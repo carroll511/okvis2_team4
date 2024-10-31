@@ -2086,10 +2086,14 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
             multiFrame->getKeypoint(im1, k1_match, pt1);
             uint64_t lmId = 0;
             const uint64_t id0 = multiFrame->landmarkId(im0, k0); // may change!!
-            const uint64_t id1 = multiFrame->landmarkId(im1, k1_match);
+            uint64_t id1 = multiFrame->landmarkId(im1, k1_match);
             bool add0 = false;
             bool add1 = false;
             if(id0 && id1) {
+              if (id0 != id1) {
+                estimator.mergeLandmark(LandmarkId(id1), LandmarkId(id0));
+                id1 = id0;
+              }
               if(!estimator.isLandmarkInitialised(LandmarkId(id0))) {
                 // only re-assess initialisation
                 if(initialisable) {

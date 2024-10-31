@@ -801,8 +801,6 @@ bool ViGraph::softConstrainExtrinsics(double posStd, double rotStd)
   return true;
 }
 
-//static int behindCtr = 0;
-
 void ViGraph::updateLandmarks()
 {
   for (auto it = landmarks_.begin(); it != landmarks_.end(); ++it) {
@@ -887,10 +885,9 @@ void ViGraph::updateLandmarks()
       const double s0 = sqrt(std::max(1.0e-12, es.eigenvalues()[0]));
       quality = (minD - 6.0 / s0) / fabs(std::max(1.0e-12, minD));
       if (behind) {
-        //std::cout << "@@@@@@@@@@@@@ " << ++behindCtr << std::endl;
         quality = 0.0;
       }
-      if(quality > 0.1) {
+      if(quality > 0.15) {
         isInitialised = true;
       } else {
         if(behind && best_pos.norm()>1.0e-12) {
@@ -904,91 +901,6 @@ void ViGraph::updateLandmarks()
     it->second.quality = std::max(0.0, quality);
   }
 }
-
-/*void ViGraph::updateLandmarks()
-{
-  for (auto it = landmarks_.begin(); it != landmarks_.end(); ++it) {
-    Eigen::Vector4d hp_W = it->second.hPoint->estimate();
-    const size_t num = it->second.observations.size();
-    bool isInitialised = false;
-    double quality = 0.0;
-    bool behind = false;
-    double best_err = 1.0e12;
-    Eigen::Vector4d best_pos(0.0,0.0,0.0,0.0);
-    if(num>0){
-      Eigen::Array<double, 3, Eigen::Dynamic> dirs(3,num);
-      int o=0;
-      //bool bad = false;
-      for(const auto& observation : it->second.observations) {
-        kinematics::Transformation T_WS, T_SCi;
-        const StateId stateId(observation.first.frameId);
-        const State & state = states_.at(stateId);
-        T_WS = state.pose->estimate();
-        T_SCi = state.extrinsics.at(observation.first.cameraIndex)->estimate();
-        kinematics::Transformation T_WCi = T_WS*T_SCi;
-        Eigen::Vector4d pos_Ci = T_WCi.inverse()*hp_W;
-
-        if(fabs(pos_Ci[3])>1.0e-12) {
-          pos_Ci = pos_Ci/pos_Ci[3];
-        }
-        Eigen::Vector3d dir_W = (T_WCi.C()*pos_Ci.head<3>()).normalized();
-        if(pos_Ci[2]<0.1) {
-          behind = true;
-        }
-        if(pos_Ci[2] < 0.0) {
-          dir_W = -dir_W; // reverse!!
-        }
-
-        // consider only small reprojection errors
-        Eigen::Vector2d err;
-        double* params[3];
-        params[0] = state.pose->parameters();
-        params[1] = it->second.hPoint->parameters();
-        params[2] = state.extrinsics.at(observation.first.cameraIndex)->parameters();
-        observation.second.errorTerm->Evaluate(params, err.data(), nullptr);
-        const double err_norm = err.norm();
-
-        if(err_norm>2.5) {
-          //bad = true;
-          continue;
-        }
-
-        if(err_norm < best_err && pos_Ci.norm()>0.0001) {
-          // remember best fit
-          // if it was far away, leave it far away; but make sure it's in front
-          // of the camera and at least at 10 cm...
-          const double dist = std::max(0.1,pos_Ci.norm());
-          best_pos.head<3>() = T_WCi.r() + dist*dir_W;
-          best_pos[3]=1.0;
-          best_err = err_norm;
-        }
-
-        dirs.col(o) = dir_W;
-        ++o;
-      }
-      Eigen::Array<double, 3, Eigen::Dynamic> dirso(3,o);
-      dirso = dirs.topLeftCorner(3,o);
-      Eigen::Vector3d std_dev =
-          ((dirso.colwise() - dirso.rowwise().mean()).square().rowwise().sum()).sqrt();
-      quality = std_dev.norm();
-      if (behind) {
-        //std::cout << "@@@@@@@@@@@@@ " << ++behindCtr << std::endl;
-        quality = 0.0;
-      }
-      if(quality > 0.04) {
-        isInitialised = true;
-      } else {
-        if(behind && best_pos.norm()>1.0e-12) {
-          // reset along best ray
-          it->second.hPoint->setEstimate(best_pos);
-        }
-      }
-    }
-    // update initialisation
-    it->second.hPoint->setInitialized(isInitialised);
-    it->second.quality = quality;
-  }
-}*/
 
 #ifdef USE_OPENMP
 void ViGraph::optimise(int maxIterations, int numThreads, bool verbose)

@@ -1686,6 +1686,32 @@ int ViSlamBackend::cleanUnobservedLandmarks() {
 
 }
 
+bool ViSlamBackend::mergeLandmark(const LandmarkId &fromId, const LandmarkId &intoId)
+{
+  bool success = (realtimeGraph_.mergeLandmark(fromId, intoId, multiFrames_));
+  // also reset associated keypoints
+  auto observations = realtimeGraph_.landmarks_.at(intoId).observations;
+  for (const auto &observation : observations) {
+    multiFrames_.at(StateId(observation.first.frameId))
+      ->setLandmarkId(observation.first.cameraIndex,
+                      observation.first.keypointIndex,
+                      intoId.value());
+  }
+
+  if (isLoopClosing_ || isLoopClosureAvailable_) {
+    for (const auto &obs : observations) {
+      touchedStates_.insert(StateId(obs.first.frameId));
+    }
+    touchedLandmarks_.insert(fromId);
+    touchedLandmarks_.insert(intoId);
+  } else {
+    // now merge
+    success &= fullGraph_.mergeLandmark(fromId, intoId, multiFrames_);
+  }
+
+  return success;
+}
+
 int ViSlamBackend::mergeLandmarks(std::vector<LandmarkId> fromIds, std::vector<LandmarkId> intoIds)
 {
   OKVIS_ASSERT_TRUE_DBG(Exception, fromIds.size() == intoIds.size(), "vectors must be same lengths")

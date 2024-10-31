@@ -486,10 +486,16 @@ class ViSlamBackend //: public VioBackendInterface
   /// \return The number of landmarks removed.
   int cleanUnobservedLandmarks();
 
+  /// \brief Merge landmark with two IDs into one, taking care of all the observations.
+  /// \param fromId Landmark from ID (will be deleted).
+  /// \param intoId Landmark to ID (will be kept).
+  /// \return True on success.
+  bool mergeLandmark(const LandmarkId &fromId, const LandmarkId &intoId);
+
   /// \brief Merge landmarks with two IDs into one, taking care of all the observations.
   /// \param fromIds Landmarks from ID (will be deleted).
   /// \param intoIds Landmarks to ID (will be kept).
-  /// \return True on success.
+  /// \return Number of successful merges.
   int mergeLandmarks(std::vector<LandmarkId> fromIds, std::vector<LandmarkId> intoIds);
 
   /// \brief Write the full optimised trajectory into a file.

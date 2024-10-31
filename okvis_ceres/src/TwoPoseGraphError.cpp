@@ -340,17 +340,17 @@ bool TwoPoseGraphError::compute() {
     const Eigen::Matrix3d V = H11.block<3,3>(0,i);
     Eigen::Matrix3d V_inv_sqrt;
     int rank;
-    PseudoInverse::symmSqrt(V, V_inv_sqrt, 1.0e-8, &rank);
+    PseudoInverse::symmSqrt(V, V_inv_sqrt, 1.0e-7, &rank);
     if(rank<3) {
       // remove
       H00_ -= H00_backup.block<6,6>(0,2*i);
       b0_ -= b0_backup.segment<6>(2*i);
-      // rotation only:
-      H00_.block<3,3>(3,3) += H00_backup.block<3,3>(3,2*i+3);
-      b0_.tail<3>() += b0_backup.segment<3>(2*i+3);
+      // rotation only -- disabled
+      //H00_.block<3,3>(3,3) += H00_backup.block<3,3>(3,2*i+3);
+      //b0_.tail<3>() += b0_backup.segment<3>(2*i+3);
       //W.block<3,3>(0,0).setZero();
     } else {
-    const Eigen::Matrix<double,6,3> M = W*V_inv_sqrt;
+      const Eigen::Matrix<double,6,3> M = W*V_inv_sqrt;
       mH +=  M*M.transpose();
       mb +=  M*(V_inv_sqrt.transpose()*b1.segment<3>(i));
     }
