@@ -60,6 +60,7 @@ namespace ceres {
 class TwoPoseGraphErrorConst;
 class TwoPoseStandardGraphError;
 
+/// \brief Base class for Two-pose graph factors.
 class TwoPoseGraphError : public ErrorInterface {
   public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW

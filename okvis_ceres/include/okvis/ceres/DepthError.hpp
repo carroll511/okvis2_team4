@@ -345,7 +345,10 @@ class DepthErrorT : public ::ceres::SizedCostFunction<
 
 };
 
+/// \brief Template spectialisation of depth error term that is one-sided.
 typedef DepthErrorT<true> OneSidedDepthError;
+
+/// \brief Template specialisation for regular depth error term.
 typedef DepthErrorT<false> DepthError;
 
 }  // namespace ceres

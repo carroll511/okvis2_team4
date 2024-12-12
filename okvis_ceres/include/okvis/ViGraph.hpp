@@ -234,7 +234,11 @@ class ViGraph
    * @return True on success.
    */
   bool setLandmark(LandmarkId id, const Eigen::Vector4d & homogeneousPoint);
-
+  /**
+   * @brief Add a one-sided depth error (10cm minimum distance, 1 mm standard deviation).
+   * @param keypointId keypoint identifier to add to.
+   * @return True on success.
+   */
   bool addOneSidedDepthError(KeypointIdentifier keypointId)
   {
     Observation &obs = observations_.at(keypointId);
@@ -257,6 +261,11 @@ class ViGraph
     return true;
   }
 
+  /**
+   * @brief Remove one-sided depth error.
+   * @param keypointId keypoint identifier to remove from.
+   * @return True on success.
+   */
   bool removeOneSidedDepthError(KeypointIdentifier keypointId)
   {
     Observation &obs = observations_.at(keypointId);
@@ -275,6 +284,8 @@ class ViGraph
     return true;
   }
 
+  /// \brief Helper function to check all observed landmarks are in front of respective cameras.
+  /// \return True If all observations are correctly of landmarks in front of respective cameras.
   bool areLandmarksInFrontOfCameras() const;
 
   // add/remove observations

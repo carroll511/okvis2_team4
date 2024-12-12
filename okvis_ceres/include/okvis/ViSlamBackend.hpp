@@ -76,7 +76,11 @@ class ViSlamBackend //: public VioBackendInterface
    */
   virtual ~ViSlamBackend() {}
 
-  bool areLandmarksInFrontOfCameras() const { return realtimeGraph_.areLandmarksInFrontOfCameras(); }
+  /// \brief Helper function to check all observed landmarks are in front of respective cameras.
+  /// \return True If all observations are correctly of landmarks in front of respective cameras.
+  bool areLandmarksInFrontOfCameras() const {
+    return realtimeGraph_.areLandmarksInFrontOfCameras();
+  }
 
   /// @name Sensor configuration related
   ///@{
