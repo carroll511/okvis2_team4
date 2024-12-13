@@ -46,6 +46,7 @@
 #include <opencv2/imgcodecs/imgcodecs.hpp>
 
 #include <okvis/ViSlamBackend.hpp>
+#include <okvis/PseudoInverse.hpp>
 #include <okvis/Component.hpp>
 #include <okvis/timing/Timer.hpp>
 
@@ -2180,6 +2181,18 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
           << relOrientationErrorBudget << " rad/kf";
       LOG(INFO) << "dist. travelled " << distanceTravelled2 << " m, no. steps " << numSteps;
 
+      return false;
+    }
+
+    // do not accept uncertain loop closures
+    Eigen::Matrix<double, 6, 6> P;
+    okvis::PseudoInverse::symm(information, P);
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(P.topLeftCorner<3, 3>());
+    Eigen::Vector3d eigenvalues = saes.eigenvalues();
+    double sigma = sqrt(eigenvalues[0] + eigenvalues[1] + eigenvalues[2]);
+    if (sigma > 0.1 && 3.0*sigma > relPositionErrorBudget*distanceTravelled2) {
+      LOG(INFO) << "Skip loop closure (reloc. 3-sigma = " << 3.0*sigma << " m vs budget "
+                   << relPositionErrorBudget*distanceTravelled2 << ") ";
       return false;
     }
 
