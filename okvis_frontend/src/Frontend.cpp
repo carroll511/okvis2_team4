@@ -338,7 +338,7 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
       const size_t K = framesInOut->numKeypoints(im);
       uint32_t distMin = briskMatchingThreshold_;
       size_t kMin = 0;
-      for (auto oldDescripor : descriptors.at(iter->first)) {
+      for (const unsigned char* oldDescripor : descriptors.at(iter->first)) {
         for (size_t k = 0; k < K; ++k) {
           const uint32_t dist = brisk::Hamming::PopcntofXORed(ddata + 48 * k, oldDescripor, 3);
           if (dist < distMin) {
@@ -955,14 +955,13 @@ bool Frontend::dataAssociationAndInitialization(
     // nonmax suppression
     size_t attempts = 0;
     for(const auto & id : stateIds) {
-      //std::cout << dBoWResult.at(f).Score << " ";
 
       // start with oldest keyframe match
       const double p = id.second;
 
       // get old multiframe
       if(attempts > std::max(size_t(10),dBow_->poseIds.size()/20)) break;
-      if(p > 0.4) {
+      if(p > params.estimator.p_dbow) {
 
         const std::shared_ptr<const MultiFrame> oldFrame = estimator.multiFrame(id.first);
         /// \todo move to separate thread
@@ -997,7 +996,8 @@ bool Frontend::dataAssociationAndInitialization(
         bool loopClosureAttemptSuccessful =
             estimator.attemptLoopClosure(
               StateId(oldFrame->id()), StateId(frameId), T_Sold_Snew, H,
-              skipFullGraphOptimisation);
+              skipFullGraphOptimisation,
+              params.estimator.drift_percentage_heuristic);
         if(!loopClosureAttemptSuccessful) {
           attemptLoopClosureTimer.stop();
           continue;
@@ -1042,7 +1042,7 @@ bool Frontend::dataAssociationAndInitialization(
         //             " no. lc lm:" << loopClosureLandmarks.size();
         LOG(INFO) << "LOOP CLOSURE: current frame " << framesInOut->id()
                   << ", matching to keyframe " << oldFrame->id() << ", "
-                  << loopClosureMatches << " matches";
+                  << loopClosureMatches << " matches, p=" << p << ".";
 
         matchLoopClosureTimer.stop();
 

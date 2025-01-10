@@ -274,6 +274,10 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
              viParameters_.estimator.full_graph_iterations);
   parseEntry(file["estimator_parameters"], "full_graph_num_threads",
              viParameters_.estimator.full_graph_num_threads);
+  parseEntry(file["estimator_parameters"], "p_dbow",
+             viParameters_.estimator.p_dbow);
+  parseEntry(file["estimator_parameters"], "drift_percentage_heuristic",
+             viParameters_.estimator.drift_percentage_heuristic);
 
   // Some options for how and what to output.
   parseEntry(file["output_parameters"], "display_matches",

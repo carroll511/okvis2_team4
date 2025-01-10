@@ -2070,7 +2070,8 @@ bool ViSlamBackend::writeFinalCsvTrajectory(const std::string &csvFileName, bool
 bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
                                        const kinematics::Transformation& T_Si_Sj,
                                        const Eigen::Matrix<double, 6, 6>& information,
-                                       bool & skipFullGraphOptimisation)
+                                       bool & skipFullGraphOptimisation,
+                                       double driftPercentageHeuristic)
 {
   OKVIS_ASSERT_TRUE(Exception, !isLoopClosing_, "Loop closure still running")
   OKVIS_ASSERT_TRUE(Exception, !isLoopClosureAvailable_,
@@ -2171,7 +2172,7 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
     const double relOrientationError =
         T_WSj_new.q().angularDistance(T_WSj_old.q())/double(numSteps);
     const double relPositionErrorBudget = // [m/m]
-            0.0135 + // 1.35% position bias
+            driftPercentageHeuristic/100.0 + // 1.35% position bias default
             0.02*distanceTravelledVec.norm()/distanceTravelled2 + // 2% scale error
             0.08/sqrt(numSteps); // position noise, 8% stdev per step
     const double relOrientationErrorBudget =

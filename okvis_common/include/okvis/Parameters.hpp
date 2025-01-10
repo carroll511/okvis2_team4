@@ -150,6 +150,8 @@ struct EstimatorParameters {
   int realtime_num_threads; ///< Number of threads for the realtime optimisation.
   int full_graph_iterations; ///< Don't do more than these for the full (background) optimisation.
   int full_graph_num_threads; ///< Number of threads for the full (background) optimisation.
+  double p_dbow; ///< Match threshold for dBoW -- unfortunately this varies with setups.
+  double drift_percentage_heuristic; ///< % allowed drift in loop closures rel. to dist. travelled.
 };
 
 /**

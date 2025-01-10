@@ -514,11 +514,13 @@ class ViSlamBackend //: public VioBackendInterface
   /// \param T_Si_Sj The relative pose between the IMU frames S.
   /// \param information The relative pose information.
   /// \param skipFullGraphOptimisation Whether to not subsequently optimise the full graph.
+  /// \param driftPercentageHeuristic Allowed drift in % of distance travelled.
   /// \return True on success.
   bool attemptLoopClosure(StateId pose_i, StateId pose_j,
                           const kinematics::Transformation& T_Si_Sj,
                           const Eigen::Matrix<double, 6, 6>& information,
-                          bool & skipFullGraphOptimisation);
+                          bool & skipFullGraphOptimisation,
+                          double driftPercentageHeuristic);
 
   /// \brief Add a loopclosure frame (after successful attempt).
   /// \brief loopClosureFrameId The ID of the frame to be added.
