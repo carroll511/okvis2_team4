@@ -400,68 +400,6 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
     inliers.at(size_t(ransac.inliers_.at(i))) = true;
   }
 
-  /*/// DEBUG drawing
-  for (size_t im = 0; im < numCameras_; ++im) {
-    cv::Mat currentImg = framesInOut->image(im).clone();
-    cv::cvtColor(currentImg, currentImg, cv::COLOR_GRAY2BGR);
-    cv::Mat oldImg = oldFrame->image(im);
-    cv::cvtColor(oldImg, oldImg, cv::COLOR_GRAY2BGR);
-    int ctr = 0;
-    std::set<uint64_t> allMatches;
-    std::set<uint64_t> allRemovedMatches;
-    for (const auto &match : matches) {
-      if (match.first.cameraIndex == im) {
-        const cv::Scalar color = inliers[ctr] ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
-        cv::KeyPoint p;
-        framesInOut->getCvKeypoint(im, match.first.keypointIndex, p);
-        cv::circle(currentImg, p.pt, 3, color, 1, cv::LINE_AA);
-        if (inliers[ctr]) {
-          allMatches.insert(match.second);
-          std::stringstream id;
-          id << match.second;
-          cv::putText(currentImg,
-                      id.str(),
-                      p.pt + cv::Point2f(-10, -6),
-                      cv::FONT_HERSHEY_COMPLEX,
-                      0.4,
-                      color,
-                      1,
-                      cv::LINE_AA);
-        } else {
-          allRemovedMatches.insert(match.second);
-        }
-      }
-      ctr++;
-    }
-    for (size_t k = 0; k < oldFrame->numKeypoints(im); ++k) {
-      uint64_t lmId = oldFrame->landmarkId(im, k);
-      cv::KeyPoint p;
-      oldFrame->getCvKeypoint(im, k, p);
-      cv::Scalar color = cv::Scalar(0, 255, 0);
-      if (allMatches.count(lmId)) {
-        cv::circle(oldImg, p.pt, 3, color, 1, cv::LINE_AA);
-        cv::putText(oldImg,
-                    std::to_string(lmId),
-                    p.pt + cv::Point2f(-10, -6),
-                    cv::FONT_HERSHEY_COMPLEX,
-                    0.4,
-                    color,
-                    1,
-                    cv::LINE_AA);
-      } else {
-        color = allRemovedMatches.count(lmId) ? cv::Scalar(0, 0, 255) : cv::Scalar(255, 0, 0);
-        cv::circle(oldImg, p.pt, 3, color, 1, cv::LINE_AA);
-      }
-    }
-
-    std::stringstream currentName, oldName;
-    currentName << framesInOut->id() << "-" << oldFrame->id() << "_" << im << "_current" << ".jpg";
-    oldName << framesInOut->id() << "-" << oldFrame->id() << "_" << im << "_old" << ".jpg";
-    cv::imwrite(currentName.str(), currentImg);
-    cv::imwrite(oldName.str(), oldImg);
-  }
-  ///*/
-
   // check distinciveness of survived matches
   float sum = 0.0;
   for (size_t im = 0; im < numCameras_; ++im) {
@@ -496,44 +434,15 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
            / (descriptorMatrix.rows() - 1))
             .cwiseSqrt();
       sum += float(inlierCtr) * stdev.sum();
-      //LOG(WARNING) << stdev.sum();
     }
   }
-  //LOG(INFO) << framesInOut->id() << "->" << oldFrame->id()
-  //          << " : descriptor stdev " << stdev.sum();
+
   const float avg = sum / float(ransac.inliers_.size());
   if (avg < 182.0 && ransac.inliers_.size() < 20) {
     LOG(INFO) << framesInOut->id() << "->" << oldFrame->id() << " : "
               << "Rejecting loop closure due to indistincive descriptors (" << avg << ")";
     return false;
   }
-
-  /*/ check distinciveness of survived matches
-  std::vector<std::vector<uchar>> features;
-  ctr2 = 0;
-  for (const auto &match : matches) {
-    if (inliers[ctr2]) {
-      features.push_back(std::vector<uchar>(48));
-      memcpy(features.back().data(),
-             framesInOut->keypointDescriptor(match.first.cameraIndex, match.first.keypointIndex),
-             48 * sizeof(uchar));
-    }
-    ctr2++;
-  }
-  DBoW2::QueryResults dBoWResult;
-  dBow_->database.query(features, dBoWResult, -1); // get all matches
-  for (const auto &result : dBoWResult) {
-    if (result.Id < dBow_->poseIds.size()) {
-      if (dBow_->poseIds[result.Id] == oldFrame->id()) {
-        LOG(WARNING) << "DBoW with score " << result.Score;
-        if (result.Score < 0.1) {
-          LOG(INFO) << "Reject loop closure after re-checking DBoW with score " << result.Score;
-          return false;
-        }
-        break;
-      }
-    }
-  }*/
 
   // refine
   TimerSwitchable loopClosureRefinementTimer("2.06 loop closure pose refinement");
@@ -823,7 +732,6 @@ bool Frontend::dataAssociationAndInitialization(
     matchMapTimer.stop();
 
     // check tracking quality
-    //LOG(WARNING) << "tracking quality id " << framesInOut->id();
     trackingQuality = estimator.trackingQuality(StateId(framesInOut->id()));
     if (trackingQuality < 0.01) {
       if(estimator.numFrames() == 2 && params.nCameraSystem.numCameras()==1) {
@@ -915,8 +823,6 @@ bool Frontend::dataAssociationAndInitialization(
         if (attempts > std::max(10, int(componentDBows_.at(c)->poseIds.size() / 20)))
           break;
         if (p > 0.4) {
-          // std::cout << "@@@@@ found component place recognition to frame " << poseId << "."
-          //           << std::endl;
           kinematics::Transformation T_Sold_Snew;
           Eigen::Matrix<double, 6, 6> H;
           if (!verifyRecognisedPlace(estimator,
@@ -931,7 +837,6 @@ bool Frontend::dataAssociationAndInitialization(
           }
           attempts++;
 
-          //std::cout << "@@@@@ T_Sold_Snew = " << std::endl << T_Sold_Snew.T() << std::endl;
           estimator.T_AiS_[StateId(framesInOut->id())][c] =
             components_.at(c).fullGraph_->pose(id.first) * T_Sold_Snew;
 
@@ -1038,8 +943,6 @@ bool Frontend::dataAssociationAndInitialization(
             break;
         }
 
-        //LOG(INFO) << "loop closure matches: " << loopClosureMatches << " vs " << inliers.size() <<
-        //             " no. lc lm:" << loopClosureLandmarks.size();
         LOG(INFO) << "LOOP CLOSURE: current frame " << framesInOut->id()
                   << ", matching to keyframe " << oldFrame->id() << ", "
                   << loopClosureMatches << " matches, p=" << p << ".";
@@ -1388,9 +1291,6 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
                             + multiFrame->geometryAs<CAMERA_GEOMETRY>(im)->focalLengthV());
     const double reprThreshold = params.imu.use ? 3.0+f*0.06 : 3.0+f*0.34;
 
-    //cv::Mat dbg = multiFrame->image(im).clone();
-    //cv::cvtColor(dbg, dbg, cv::COLOR_GRAY2BGR);
-
     const size_t numKeypoints = multiFrame->numKeypoints(im);
     if(numKeypoints == 0) {
       continue; // no points -- bad!
@@ -1452,8 +1352,6 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
 
       landmarkToMatch.projection = kp;
 
-      //cv::circle(dbg, cv::Point2f(kp[0], kp[1]), 3, cv::Scalar(255,0,0), 1, cv::LINE_AA );
-
       // distinguish whether to consider as 3D point or not.
       const double quality = it->second.quality;
 
@@ -1487,10 +1385,6 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
           if(cosA > cos(10.0/focalLength)) {
             landmarkToMatch.is3d = true;
           }
-          //std::cout << quality << std::endl;
-          //if (quality > 1.0e-6) {
-          //  landmarkToMatch.is3d = true;
-          //}
         }
 
         // over 35 degree viewpoint change
@@ -1535,8 +1429,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
           landmarkToMatch.kids.push_back(kid);
 
           // remember which were used
-          //std::cout << " write " << worstIdx << " " << score;
-          o = std::max(o, worstIdx);
+          o = std::max(o,worstIdx);
           bestScores[worstIdx] = score;
         }
       }
@@ -1549,19 +1442,20 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
       landmarkToMatch.r_W.conservativeResize(3,o + 1);
       dataPtr += (o + 1) *48;
 
-      //std::cout << o << std::endl;
-
       if(landmarkToMatch.descriptors.rows==0) {
         // no observations -- weird.
         continue;
+      }
+
+      // check classification
+      if (it->second.classification == 10 || it->second.classification == 11) {
+        landmarkToMatch.ignore = true;
       }
 
       // insert
       landmarksToMatch[landmarkId] = landmarkToMatch;
     }
     landmarksToMatchVec[im] = landmarksToMatch;
-
-    //LOG(WARNING) << "landmarksToMatch.size()" << landmarksToMatch.size();
 
     // multithreaded matching
     const size_t num_matching_threads = size_t(params.frontend.num_matching_threads);
@@ -1587,7 +1481,6 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
       threads[t]->join();
       delete threads[t];
       reprErr += reprErrors[t];
-      //ctr += ctrs[t];
     }
 
     // now insert observations
@@ -1602,13 +1495,13 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
           newIds.push_back(lmIds[k]);
         }
 
-        //if(hps_W[k].norm()>1.0e-22 && !estimator.isLandmarkInitialised(lmIds[k])) { //ugly
-        //  estimator.setLandmark(lmIds[k], hps_W[k], true);
-        //}
-
         multiFrame->setLandmarkId(im, k, lmIds[k].value());
         estimator.addObservation<CAMERA_GEOMETRY>(
               lmIds[k], StateId(currentFrameId), im, k);
+        if (landmarksToMatch[lmIds[k]].ignore) {
+          estimator.setObservationInformation(StateId(currentFrameId), im, k,
+                                              Eigen::Matrix2d::Identity()*0.00001);
+        }
         ctr++;
       }
     }
@@ -1644,7 +1537,6 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
       secondRansac = true;
     }
   }
-  //OKVIS_ASSERT_TRUE(Exception, estimator.areLandmarksInFrontOfCameras(), "after ransac")
 
   // do optimisation
   std::vector<StateId> updatedStatesRealtime;
@@ -1655,19 +1547,16 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     /*int numInliers = */removeOutliers<CAMERA_GEOMETRY>(estimator,
                                     params.nCameraSystem,
                                     estimator.multiFrame(StateId(currentFrameId)));
-    //LOG(INFO) << "numInliers = " << numInliers;
     estimator.optimiseRealtimeGraph(
       2, updatedStatesRealtime, params.estimator.realtime_num_threads,
       false, true, isInitialized_);
     T_WS1 = estimator.pose(StateId(currentFrameId));
-    //LOG(INFO) << "refine \n" <<T_WS1.T();
   }
   if (ctr <= 3 && isInitialized_) {
     secondRansac = true;
   }
 
   // now the non-initialised ones
-  //OKVIS_ASSERT_TRUE(Exception, estimator.areLandmarksInFrontOfCameras(), "before non-initialised match to map")
   for (size_t im = 0; im < params.nCameraSystem.numCameras(); ++im) {
     // the current frame to match
     const MultiFramePtr multiFrame = estimator.multiFrame(StateId(currentFrameId));
@@ -1704,7 +1593,6 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     for(size_t t = 0; t<num_matching_threads; ++t) {
       threads[t]->join();
       delete threads[t];
-      //ctr += ctrs[t];
     }
 
     // now insert observations
@@ -1770,7 +1658,10 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
         multiFrame->setLandmarkId(im, k, lmIds[k].value());
         estimator.addObservation<CAMERA_GEOMETRY>(
             lmIds[k], StateId(currentFrameId), im, k);
-
+        if (landmarksToMatch[lmIds[k]].ignore) {
+          estimator.setObservationInformation(StateId(currentFrameId), im, k,
+                                              Eigen::Matrix2d::Identity()*0.00001);
+        }
         ctr++;
       }
     }
@@ -2475,10 +2366,8 @@ int Frontend::removeOutliers(Estimator &estimator,
             bool remove = false;
             const Eigen::Vector4d hp_W = lm.point;
             Eigen::Vector4d hp_Ci = T_CiW * hp_W;
-            //std::cout << hp_Ci.head<3>().dot(e_Ci);
             const auto camera = currentFrame->geometryAs<CAMERA_GEOMETRY>(im);
             if (cameras::ProjectionStatus::Successful == camera->projectHomogeneous(hp_Ci, &proj)) {
-              //std::cout << (proj - pt).norm() << " ";
               if ((proj - pt).norm() > 4.0) {
                 remove = true;
               }
@@ -2486,18 +2375,15 @@ int Frontend::removeOutliers(Estimator &estimator,
               remove = true;
             }
             if (!remove) {
-              //std::cout << "+";
               ctr++;
             } else {
               estimator.removeObservation(StateId(mfId), im, k);
-              //std::cout << "-";
             }
           }
         }
       }
     }
   }
-  //std::cout << std::endl;
   return ctr;
 }
 
@@ -2561,14 +2447,9 @@ bool Frontend::runRansac3d2d(
     Eigen::Matrix4d T_WS_mat = Eigen::Matrix4d::Identity();
     T_WS_mat.topLeftCorner<3, 4>() = ransac.model_coefficients_;
     kinematics::Transformation T_WS = kinematics::Transformation(T_WS_mat);
-    //kinematics::Transformation T_WS0 = estimator.pose(StateId(currentFrame->id()));
-    //LOG(INFO) << (T_WS * T_WS0.inverse()).r().norm() << " "
-    //          << T_WS.q().angularDistance(T_WS0.q());
     if(initializePose) {
       estimator.setPose(StateId(currentFrame->id()), T_WS);
     }
-    //LOG(INFO) << "RANSAC success " << numInliers << " "
-    //          << double(ransac.inliers_.size())/double(numCorrespondences);
     return true;
   } else {
     LOG(INFO) << "RANSAC FAIL: " << numInliers << " inliers, ratio = "

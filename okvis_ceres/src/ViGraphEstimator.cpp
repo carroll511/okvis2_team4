@@ -1191,7 +1191,6 @@ bool ViGraphEstimator::isSynched(const ViGraphEstimator & other) const
         pars[1]=other.states_.at(otherP1[i]).pose->parameters();
         otherErrors[i]->EvaluateWithMinimalJacobians(pars, err.data(), nullptr, nullptr);
         const double r1 = err.transpose()*err;
-        //std::cout << "pge "<< r0-r1 << std::endl;
         noTwoPoseLinks++;
         if(fabs(r0-r1)>1.0e-10) {
           std::cout << "inconsistent two pose links: deviating error term" << std::endl;

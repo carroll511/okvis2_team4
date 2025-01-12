@@ -466,6 +466,7 @@ private:
     Eigen::Matrix3Xd r_W; ///< Image centres of all the observations (W-coords).
     bool is3d = false; ///< Determine whether treated as 3D initialised.
     Eigen::Vector2d projection; ///< 2D projection location in pixels.
+    bool ignore = false; ///< Ignore if classified as sky / person.
   };
 
   /**
@@ -487,6 +488,7 @@ private:
    * @param[out] lmIds matched landmark IDs.
    * @param[out] hps_W matched landmarks (homogeneous) positions.
    * @param[out] ctrs Number of matches (by im).
+   * @param[out] reprErrs Reprojection errors (by im).
    */
   template<class CAMERA_GEOMETRY>
   void matchToMapByThread(

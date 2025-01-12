@@ -44,12 +44,12 @@ imu_parameters:
     use: true
     a_max: 176.0 # acceleration saturation [m/s^2]
     g_max: 7.8 # gyro saturation [rad/s]
-    sigma_g_c: 0.0016 #12.0e-4 # gyro noise density [rad/s/sqrt(Hz)]
-    sigma_a_c: 0.028 #8.0e-3 # accelerometer noise density [m/s^2/sqrt(Hz)]
+    sigma_g_c: 0.0008 #0.001 #0.004 # gyro noise density [rad/s/sqrt(Hz)]
+    sigma_a_c: 0.01 #0.07 # accelerometer noise density [m/s^2/sqrt(Hz)]
     sigma_bg: 0.01 # gyro bias prior [rad/s]
     sigma_ba: 0.1 # accelerometer bias prior [m/s^2]
-    sigma_gw_c: 0.00022 # gyro drift noise density [rad/s^s/sqrt(Hz)]
-    sigma_aw_c: 0.002 # accelerometer drift noise density [m/s^2/sqrt(Hz)]
+    sigma_gw_c: 0.00022 #0.000022 # gyro drift noise density [rad/s^s/sqrt(Hz)]
+    sigma_aw_c: 0.001 #0.00172 # accelerometer drift noise density [m/s^2/sqrt(Hz)]
     # Local gravity at 85748 Garching, Germany (latitude: 48.262768, elevation: 481m), according to https://www.sensorsone.com/local-gravity-calculator/
     g: 9.80766 # Earth's acceleration due to gravity [m/s^2]
     a0: [ 0.0441545,   -0.0260651,   -0.0283834 ] # Accelerometer bias [m/s^2]
@@ -64,7 +64,7 @@ imu_parameters:
 # frontend: detection etc. 
 frontend_parameters:
     detection_threshold: 34.0 # detection threshold. By default the uniformity radius in pixels
-    absolute_threshold: 4.0 # absolute Harris corner threshold (noise floor)
+    absolute_threshold: 200.0 # absolute Harris corner threshold (noise floor)
     matching_threshold: 60.0 # BRISK descriptor matching threshold
     octaves: 0 # number of octaves for detection. 0 means single-scale at highest resolution
     max_num_keypoints: 900 # restrict to a maximum of this many keypoints per image (strongest ones)
@@ -92,5 +92,5 @@ estimator_parameters:
 
 # some options for how and what to output
 output_parameters:
-    display_matches: true  # displays debug video and matches. May be slow.
+    display_matches: false  # displays debug video and matches. May be slow.
     display_overhead: false # debug overhead image. Is slow.

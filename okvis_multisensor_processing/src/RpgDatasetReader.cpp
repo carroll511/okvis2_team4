@@ -244,8 +244,6 @@ void  RpgDatasetReader::processing() {
 
         t_imu = Time(seconds, nanoseconds);
 
-        // std::cout <<s0<<" " << t_imu << " " << acc.transpose() << gyr.transpose() << std::endl;
-
         // add the IMU measurement for (blocking) processing
         if (t_imu - start + okvis::Duration(1.0) > deltaT_) {
           for(auto & imuCallback : imuCallbacks_) {

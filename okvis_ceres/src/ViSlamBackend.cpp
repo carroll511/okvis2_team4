@@ -172,14 +172,10 @@ double ViSlamBackend::trackingQuality(StateId id) const
     const double radius = double(std::min(rows,cols))*kptradius_;
     matchesImg.at(im) = cv::Mat::zeros(rows, cols, CV_8UC1);
     const size_t num = frame->numKeypoints(im);
-    //std::cout << "num " << im << " = " << num << std::endl;
     cv::KeyPoint keypoint;
     for (size_t k = 0; k < num; ++k) {
       frame->getCvKeypoint(im, k, keypoint);
       uint64_t lmId = frame->landmarkId(im, k);
-      //std::cout << lmId;
-      //if (lmId != 0)
-      //  std::cout << ".";
       if (lmId != 0 && realtimeGraph_.landmarkExists(LandmarkId(lmId))) {
         // make sure these are observed elsewhere
         for(const auto & obs : realtimeGraph_.landmarks_.at(LandmarkId(lmId)).observations) {
@@ -193,12 +189,10 @@ double ViSlamBackend::trackingQuality(StateId id) const
       }
     }
     // one point per image does not count.
-    //cv::imwrite("matches"+std::to_string(im)+".jpg", matchesImg.at(im));
     const int pointArea = int(radius*radius*M_PI);
     intersectionCount += std::max(0,cv::countNonZero(matchesImg.at(im)) - pointArea);
     unionCount += rows*cols - pointArea;
   }
-  //std::cout << std::endl;
   return matchedPoints < 8 ? 0.0 : double(intersectionCount)/double(unionCount);
 }
 
@@ -708,11 +702,6 @@ bool ViSlamBackend::applyStrategy(size_t numKeyframes,
     t6.stop();
   }
 
-  // prune superfluous keyframes for future place recognition
-  //TimerSwitchable t7("7.7 prune place recognition frames");
-  //prunePlaceRecognitionFrames();
-  //t7.stop();
-
   return true;
 }
 
@@ -1055,7 +1044,6 @@ void ViSlamBackend::drawOverheadImage(cv::Mat &image, int idx) const
         cv::Point2d cvPos0(pos0[0]+image.cols*0.5, -pos0[1]+image.rows*0.5);
         cv::Point2d cvPos1(pos1[0]+image.cols*0.5, -pos1[1]+image.rows*0.5);
         double brightness = 50.0 + std::min(205.0, piter->second.errorTerm->strength());
-        //std::cout <<  piter->second.errorTerm->strength() << std::endl;
         cv::line(image, cvPos0, cvPos1, cv::Scalar(brightness/2,brightness, brightness), 3,
                  cv::LINE_AA);
       }

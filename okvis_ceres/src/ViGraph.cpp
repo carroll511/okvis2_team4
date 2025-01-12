@@ -208,8 +208,6 @@ StateId ViGraph::addStatesPropagate(const Time &timestamp,
                                          speedAndBias,
                                          lastState.timestamp,
                                          timestamp);
-    //LOG(INFO) << "n = " << n
-    //          << ", t = " << T_WS.r().transpose() << ", q = " << T_WS.q().coeffs().transpose();
   } else {
     // try and apply constant velocity model
     auto iter = states_.rbegin();
@@ -222,8 +220,6 @@ StateId ViGraph::addStatesPropagate(const Time &timestamp,
       Eigen::AngleAxisd daa(T_WS.q() * T_WS_m1.q().inverse());
       daa.angle() *= r;
       T_WS.set(T_WS.r() + dr, T_WS.q() * Eigen::Quaterniond(daa));
-      //LOG(WARNING) << "---\n" << T_WS_m1.T() << "\n" << T_WS.T() << "\n===";
-      //LOG(INFO) << dr.norm() << " : " << 2.0 * acos(dq.w());
     }
   }
   state.pose.reset(new ceres::PoseParameterBlock(T_WS, id.value(), timestamp));
