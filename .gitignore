@@ -2,3 +2,6 @@
 /build*
 /output*
 /documentation
+
+tuning_logs/
+tuning_runs/
