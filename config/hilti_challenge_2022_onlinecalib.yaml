@@ -71,8 +71,8 @@ camera_parameters:
     image_delay: 0.0018 # [s] timestamp_camera_correct = timestamp_camera - image_delay
     sync_cameras: [0,1,2,3,4] # the cameras that will be synchronised
     online_calibration: # some parameters to set the online 
-        do_extrinsics: false # Do we online-calibrate extrinsics?
-        do_extrinsics_final_ba: false # Do we calibrate extrinsics in final BA?
+        do_extrinsics: true # Do we online-calibrate extrinsics?
+        do_extrinsics_final_ba: true # Do we calibrate extrinsics in final BA?
         sigma_r: 0.001 # T_SCi position prior stdev [m]
         sigma_alpha: 0.005 # T_SCi orientation prior stdev [rad]
 
@@ -104,7 +104,7 @@ frontend_parameters:
     octaves: 0 # number of octaves for detection. 0 means single-scale at highest resolution
     max_num_keypoints: 700 # restrict to a maximum of this many keypoints per image (strongest ones)
     keyframe_overlap: 0.59 # minimum field-of-view overlap
-    use_cnn: false # use the CNN (if available) to filter out dynamic content / sky
+    use_cnn: true # use the CNN (if available) to filter out dynamic content / sky
     parallelise_detection: true # Run parallel detect & describe.
     num_matching_threads: 1 # Parallelise matching with this number of threads.
 
