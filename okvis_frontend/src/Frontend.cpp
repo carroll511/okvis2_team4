@@ -429,6 +429,24 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
   std::vector<std::shared_ptr<ceres::ReprojectionError2dBase>> reprojectionErrors;
   std::vector<std::pair<const double *, const double *>> extrinsicsAndLandmarks;
 
+  // compute inverse of average feature covariance (use average keypoint size as proxy)
+  double avgSizeSquared = 0.0;
+  size_t countedFeatures = 0;
+  for (size_t k = 0; k < numCorrespondences; ++k) {
+    if (inliers[k]) {
+      const size_t camIdx = size_t(adapter.camIndex(k));
+      const size_t keypointIdx = size_t(adapter.keypointIndex(k));
+      double size = 1.0;
+      if (framesInOut->getKeypointSize(camIdx, keypointIdx, size)) {
+        avgSizeSquared += size * size;
+        ++countedFeatures;
+      }
+    }
+  }
+  const double avgCovariance = countedFeatures > 0 ? (avgSizeSquared / countedFeatures) / 64.0 : 1.0 / 64.0;
+  const double avgInformation = avgCovariance > 1e-12 ? 1.0 / avgCovariance : 64.0;
+  okvis::timing::Timing::setDebugValue("image_gain", avgInformation);
+
   // add error terms and create landmarks if necessary
   for (size_t k = 0; k < numCorrespondences; ++k) {
     if (inliers[k]) {
@@ -451,6 +469,7 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
       if (framesInOut->getKeypoint(camIdx, keypointIdx, kp)) {
         double size = 1.0;
         framesInOut->getKeypointSize(camIdx, keypointIdx, size);
+        const double infoWeight = avgInformation > 0.0 ? avgInformation : 64.0 / (size * size);
         switch (distortionType) {
         case okvis::cameras::NCameraSystem::RadialTangential: {
           std::shared_ptr<
@@ -461,7 +480,7 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
                 camIdx),
               camIdx,
               kp,
-              64.0 / (size * size) * Eigen::Matrix2d::Identity()));
+              infoWeight * Eigen::Matrix2d::Identity()));
           reprojectionErrors.push_back(reprojectionError);
           quickSolver.AddResidualBlock(reprojectionError.get(),
                                        &cauchyLoss,
@@ -471,15 +490,15 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
           break;
         }
         case okvis::cameras::NCameraSystem::Equidistant: {
-          std::shared_ptr<
-            ceres::ReprojectionError<cameras::PinholeCamera<cameras::EquidistantDistortion>>>
+            std::shared_ptr<
+              ceres::ReprojectionError<cameras::PinholeCamera<cameras::EquidistantDistortion>>>
             reprojectionError(
               new ceres::ReprojectionError<cameras::PinholeCamera<cameras::EquidistantDistortion>>(
                 framesInOut->geometryAs<cameras::PinholeCamera<cameras::EquidistantDistortion>>(
                   camIdx),
                 camIdx,
                 kp,
-                64.0 / (size * size) * Eigen::Matrix2d::Identity()));
+                infoWeight * Eigen::Matrix2d::Identity()));
           reprojectionErrors.push_back(reprojectionError);
           quickSolver.AddResidualBlock(reprojectionError.get(),
                                        &cauchyLoss,
@@ -489,15 +508,15 @@ bool Frontend::verifyRecognisedPlace(const Estimator &estimator,
           break;
         }
         case okvis::cameras::NCameraSystem::RadialTangential8: {
-          std::shared_ptr<
-            ceres::ReprojectionError<cameras::PinholeCamera<cameras::RadialTangentialDistortion8>>>
+            std::shared_ptr<
+              ceres::ReprojectionError<cameras::PinholeCamera<cameras::RadialTangentialDistortion8>>>
             reprojectionError(new ceres::ReprojectionError<
                               cameras::PinholeCamera<cameras::RadialTangentialDistortion8>>(
               framesInOut->geometryAs<cameras::PinholeCamera<cameras::RadialTangentialDistortion8>>(
                 camIdx),
               camIdx,
               kp,
-              64.0 / (size * size) * Eigen::Matrix2d::Identity()));
+              infoWeight * Eigen::Matrix2d::Identity()));
           reprojectionErrors.push_back(reprojectionError);
           quickSolver.AddResidualBlock(reprojectionError.get(),
                                        &cauchyLoss,
