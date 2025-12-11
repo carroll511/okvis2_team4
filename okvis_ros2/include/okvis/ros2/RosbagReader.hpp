@@ -73,8 +73,10 @@ public:
   /// @param numCameras The total number of cameras.
   /// @param syncCameras Camera group to force synchronisation.
   /// @param deltaT Duration [s] to skip in the beginning.
+  /// @param topicPrefix Topic name prefix (default: "/okvis"). For example, use "/alphasense" for HILTI22 dataset.
   RosbagReader(const std::string& path, size_t numCameras, const std::set<size_t> & syncCameras,
-                const Duration & deltaT = Duration(0.0));
+                const Duration & deltaT = Duration(0.0),
+                const std::string& topicPrefix = "/okvis");
 
   /// @brief Destructor: stops streaming.
   virtual ~RosbagReader();
@@ -122,6 +124,8 @@ private:
   std::set<size_t> syncCameras_; ///< Camera group to force synchronisation.
 
   Duration deltaT_ = okvis::Duration(0.0); ///< Skip duration [s].
+  
+  std::string topicPrefix_ = "/okvis"; ///< Topic name prefix (e.g., "/okvis" or "/alphasense").
 
 };
 

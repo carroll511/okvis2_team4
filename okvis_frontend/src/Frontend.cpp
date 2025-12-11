@@ -38,6 +38,7 @@
  */
 
 #include <thread>
+#include <chrono>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/resource.h>
@@ -143,6 +144,7 @@ Frontend::Frontend(size_t numCameras, std::string dBowVocDir)
       briskDescriptionScaleInvariance_(false),
       briskMatchingThreshold_(60.0),
       keyframeInsertionOverlapThreshold_(0.55f),
+      params_ptr_(nullptr),
       dBow_(new DBoW(dBowVocDir))
 {
   // create mutexes for feature detectors and descriptor extractors
@@ -246,9 +248,141 @@ bool Frontend::detectAndDescribe(size_t cameraIndex, std::shared_ptr<okvis::Mult
   // ExtractionDirection == gravity direction in camera frame
   Eigen::Vector3d g_in_W(0, 0, -1);
   Eigen::Vector3d extractionDir = T_WC.inverse().C() * g_in_W;
+  // Use SuperPoint if enabled, otherwise use BRISK
+#ifdef OKVIS_USE_SUPERPOINT
+  if (params_ptr_ && params_ptr_->frontend.use_superpoint && 
+      !superpoint_extractors_.empty() && 
+      cameraIndex < superpoint_extractors_.size() &&
+      superpoint_extractors_[cameraIndex] && 
+      superpoint_extractors_[cameraIndex]->isInitialized()) {
+    
+    // Use SuperPoint for feature extraction
+    cv::Mat image = frameOut->image(cameraIndex);
+    if (image.empty()) {
+      LOG(ERROR) << "[SuperPoint] Empty image for camera " << cameraIndex 
+                 << ", frame " << frameOut->id();
+      return false;
+    }
+
+    std::vector<cv::KeyPoint> keypoints;
+    cv::Mat descriptors;
+    
+    // Retry logic for SuperPoint extraction
+    const int max_retries = 3;
+    bool extraction_success = false;
+    uint64_t frameId = frameOut->id();
+    
+    for (int retry = 0; retry < max_retries; ++retry) {
+      if (superpoint_extractors_[cameraIndex]->extract(image, keypoints, descriptors)) {
+        extraction_success = true;
+        if (retry > 0) {
+          LOG(INFO) << "[SuperPoint] Extraction succeeded on retry " << retry 
+                    << " for frame " << frameId << ", camera " << cameraIndex;
+        }
+        break;
+      } else {
+        if (retry == 0) {
+          LOG(WARNING) << "[SuperPoint] Initial extraction failed for frame " << frameId 
+                       << ", camera " << cameraIndex 
+                       << " (image size: " << image.cols << "x" << image.rows 
+                       << ", type: " << image.type() << ")";
+        } else {
+          LOG(WARNING) << "[SuperPoint] Extraction retry " << retry 
+                       << " failed for frame " << frameId 
+                       << ", camera " << cameraIndex;
+        }
+        
+        // Brief delay before retry (only for retries, not first attempt)
+        if (retry < max_retries - 1) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+      }
+    }
+    
+    if (!extraction_success) {
+      LOG(ERROR) << "[SuperPoint] Extraction failed after " << max_retries 
+                 << " attempts for frame " << frameId 
+                 << ", camera " << cameraIndex 
+                 << ". Falling back to BRISK. "
+                 << "This may cause inconsistent matching (some frames with SuperPoint, "
+                 << "others with BRISK).";
+      // Fallback to BRISK - continue to BRISK section below
+    } else {
+      // Set keypoints and descriptors in frame
+      frameOut->resetKeypoints(cameraIndex, keypoints);
+      
+      // Store float descriptors separately for LightGlue matching
+      if (descriptors.type() == CV_32F) {
+        // Store float descriptors for LightGlue
+        uint64_t frameId = frameOut->id();
+        if (float_descriptors_.find(frameId) == float_descriptors_.end()) {
+          float_descriptors_[frameId] = std::vector<cv::Mat>(numCameras_);
+        }
+        float_descriptors_[frameId][cameraIndex] = descriptors.clone();
+        
+        // Extract BRISK descriptors at SuperPoint keypoint locations
+        // This ensures DBoW and loop closure use proper BRISK descriptors (48 bytes)
+        cv::Mat image = frameOut->image(cameraIndex);
+        cv::Mat image_gray;
+        
+        // BRISK requires grayscale 8-bit images
+        if (image.channels() == 3) {
+          cv::cvtColor(image, image_gray, cv::COLOR_BGR2GRAY);
+        } else if (image.channels() == 1 && image.type() == CV_8UC1) {
+          image_gray = image;
+        } else {
+          // Convert to grayscale if needed
+          if (image.channels() == 1) {
+            image.convertTo(image_gray, CV_8UC1);
+          } else {
+            cv::cvtColor(image, image_gray, cv::COLOR_BGR2GRAY);
+          }
+        }
+        
+        cv::Mat brisk_descriptors;
+        
+        // Set extraction direction for BRISK (required for camera-aware extraction)
+        std::static_pointer_cast<cv::BriskDescriptorExtractor>(descriptorExtractors_[cameraIndex])
+            ->setExtractionDirection(
+              cv::Vec3f(float(extractionDir[0]), float(extractionDir[1]), float(extractionDir[2])));
+        
+        // Extract BRISK descriptors at SuperPoint keypoint locations
+        // Note: BRISK extractor can compute descriptors for given keypoints without detection
+        // The keypoint scale/angle from SuperPoint will be used if available
+        descriptorExtractors_[cameraIndex]->compute(image_gray, keypoints, brisk_descriptors);
+        
+        if (!brisk_descriptors.empty() && brisk_descriptors.rows == static_cast<int>(keypoints.size())) {
+          // Store BRISK descriptors (48 bytes) for DBoW and loop closure
+          frameOut->resetDescriptors(cameraIndex, brisk_descriptors);
+          LOG(INFO) << "[SuperPoint+BRISK] Extracted " << brisk_descriptors.rows 
+                    << " BRISK descriptors for DBoW/loop closure, camera " << cameraIndex;
+        } else {
+          // Fallback: use quantized SuperPoint descriptor (not ideal but better than nothing)
+          LOG(WARNING) << "[SuperPoint+BRISK] BRISK extraction failed or size mismatch. "
+                       << "Using quantized SuperPoint descriptor (may cause issues with DBoW/loop closure).";
+          cv::Mat descriptors_uchar;
+          descriptors.convertTo(descriptors_uchar, CV_8U, 255.0);
+          frameOut->resetDescriptors(cameraIndex, descriptors_uchar);
+        }
+      } else {
+        frameOut->resetDescriptors(cameraIndex, descriptors);
+      }
+
+      // precompute backprojections
+      frameOut->computeBackProjections(cameraIndex);
+
+      return true;
+    }
+  }
+#endif
+
+  // Use BRISK (default or fallback)
+  // Only set extraction direction for BRISK
+  if (!params_ptr_ || !params_ptr_->frontend.use_superpoint) {
   std::static_pointer_cast<cv::BriskDescriptorExtractor>(descriptorExtractors_[cameraIndex])
       ->setExtractionDirection(
         cv::Vec3f(float(extractionDir[0]),float(extractionDir[1]),float(extractionDir[2])));
+  }
 
   frameOut->setDetector(cameraIndex, featureDetectors_[cameraIndex]);
   frameOut->setExtractor(cameraIndex, descriptorExtractors_[cameraIndex]);
@@ -1050,6 +1184,9 @@ void Frontend::clear()
   endCnnThreads();
   isInitialized_ = false;        // Is the pose initialised?
   dBow_->database.clear();
+#ifdef OKVIS_USE_SUPERPOINT
+  float_descriptors_.clear();  // Clear stored float descriptors
+#endif
   dBow_->poseIds.clear(); // Store the multiframe IDs corresponsind to the dBow ones
   trackingLost_ = false; // Is the tracking currently lost?
 }
@@ -1221,6 +1358,19 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     descriptorPool[im] = cv::Mat(
         int(numDescriptorsToKeep)*pointMap.size(), 48, CV_8UC1);
     uchar* dataPtr = descriptorPool[im].data;
+    
+#ifdef OKVIS_USE_SUPERPOINT
+    // Float descriptor pool for LightGlue matching
+    cv::Mat float_descriptorPool_im;
+    float* floatDataPtr = nullptr;
+    bool use_float_matching = params.frontend.use_superpoint && params.frontend.use_lightglue;
+    if (use_float_matching) {
+      float_descriptorPool_im = cv::Mat(
+          int(numDescriptorsToKeep)*pointMap.size(), 256, CV_32F);
+      floatDataPtr = (float*)float_descriptorPool_im.data;
+    }
+#endif
+
     for(MapPoints::const_iterator it = pointMap.begin(); it != pointMap.end(); ++it) {
       if(loopClosureLandmarksToUseExclusively) {
         if(!loopClosureLandmarksToUseExclusively->count(it->first)) {
@@ -1265,6 +1415,13 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
       std::vector<double> bestScores(numDescriptorsToKeep, 1.0);
       landmarkToMatch.descriptors = cv::Mat(
           int(numDescriptorsToKeep), 48, CV_8UC1, dataPtr);
+#ifdef OKVIS_USE_SUPERPOINT
+      if (use_float_matching && floatDataPtr) {
+        landmarkToMatch.float_descriptors = cv::Mat(
+            int(numDescriptorsToKeep), 256, CV_32F, floatDataPtr);
+        landmarkToMatch.has_float_descriptors = false; // Will be set to true if we find any
+      }
+#endif
       landmarkToMatch.e_W.resize(3,numDescriptorsToKeep);
       landmarkToMatch.r_W.resize(3,numDescriptorsToKeep);
       landmarkToMatch.kids.reserve(numDescriptorsToKeep);
@@ -1327,6 +1484,25 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
               oldFrame->keypointDescriptor(
                   kid.cameraIndex, kid.keypointIndex), 48);
 
+#ifdef OKVIS_USE_SUPERPOINT
+          // Also copy float descriptors if available
+          if (use_float_matching && floatDataPtr) {
+            auto float_it = float_descriptors_.find(kid.frameId);
+            if (float_it != float_descriptors_.end() &&
+                kid.cameraIndex < float_it->second.size() &&
+                !float_it->second[kid.cameraIndex].empty() &&
+                float_it->second[kid.cameraIndex].type() == CV_32F &&
+                static_cast<size_t>(kid.keypointIndex) < 
+                    static_cast<size_t>(float_it->second[kid.cameraIndex].rows)) {
+              // Copy float descriptor
+              const cv::Mat& float_desc_src = float_it->second[kid.cameraIndex];
+              float_desc_src.row(kid.keypointIndex).copyTo(
+                  landmarkToMatch.float_descriptors.row(o));
+              landmarkToMatch.has_float_descriptors = true;
+            }
+          }
+#endif
+
           // remember some other stuff for efficiency
           Eigen::Vector3d e_C;
           oldFrame->getBackProjection(kid.cameraIndex, kid.keypointIndex, e_C);
@@ -1343,6 +1519,14 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
 
       // crop unused bottom rows / right cols
       landmarkToMatch.descriptors = landmarkToMatch.descriptors(cv::Rect(0, 0, 48, o));
+#ifdef OKVIS_USE_SUPERPOINT
+      if (use_float_matching && floatDataPtr && landmarkToMatch.has_float_descriptors) {
+        landmarkToMatch.float_descriptors = landmarkToMatch.float_descriptors(cv::Rect(0, 0, 256, o));
+        floatDataPtr += o * 256;
+      } else {
+        landmarkToMatch.has_float_descriptors = false;
+      }
+#endif
       landmarkToMatch.e_W.conservativeResize(3,o);
       landmarkToMatch.r_W.conservativeResize(3,o);
       dataPtr += o*48;
@@ -1367,6 +1551,20 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     AlignedVector<Eigen::Vector4d> hps_W(numKeypoints, Eigen::Vector4d::Zero());
     std::vector<size_t> ctrs(num_matching_threads);
 
+    // Get current frame's float descriptors if available
+    cv::Mat currentFloatDescriptors;
+#ifdef OKVIS_USE_SUPERPOINT
+    if (params.frontend.use_superpoint) {
+      auto float_it = float_descriptors_.find(currentFrameId);
+      if (float_it != float_descriptors_.end() && 
+          im < float_it->second.size() &&
+          !float_it->second[im].empty() &&
+          float_it->second[im].type() == CV_32F) {
+        currentFloatDescriptors = float_it->second[im];
+      }
+    }
+#endif
+
     std::vector<std::thread*> threads(num_matching_threads, nullptr);
     for(size_t t = 0; t<num_matching_threads; ++t) {
       threads[t] = new std::thread(
@@ -1375,7 +1573,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
               loopClosureLandmarksToUseExclusively, std::cref(T_WS1),
               std::cref(landmarksToMatch), numKeypoints,
               std::cref(pointMap), im, std::cref(multiFrame), std::ref(distances),
-              std::ref(lmIds), std::ref(hps_W), std::ref(ctrs));
+              std::ref(lmIds), std::ref(hps_W), std::ref(ctrs), std::cref(currentFloatDescriptors));
     }
 
     for(size_t t = 0; t<num_matching_threads; ++t) {
@@ -1454,6 +1652,20 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
     AlignedVector<Eigen::Vector4d> hps_W(numKeypoints, Eigen::Vector4d::Zero());
     std::vector<size_t> ctrs(num_matching_threads);
 
+    // Get current frame's float descriptors if available
+    cv::Mat currentFloatDescriptors2;
+#ifdef OKVIS_USE_SUPERPOINT
+    if (params.frontend.use_superpoint) {
+      auto float_it = float_descriptors_.find(currentFrameId);
+      if (float_it != float_descriptors_.end() && 
+          im < float_it->second.size() &&
+          !float_it->second[im].empty() &&
+          float_it->second[im].type() == CV_32F) {
+        currentFloatDescriptors2 = float_it->second[im];
+      }
+    }
+#endif
+
     std::vector<std::thread*> threads(num_matching_threads, nullptr);
     for(size_t t = 0; t<num_matching_threads; ++t) {
       threads[t] = new std::thread(
@@ -1462,7 +1674,7 @@ int Frontend::matchToMap(Estimator &estimator, const okvis::ViParameters& params
               loopClosureLandmarksToUseExclusively, std::cref(T_WS1),
               std::cref(landmarksToMatchVec[im]), numKeypoints,
               std::cref(pointMap), im, std::cref(multiFrame), std::ref(distances),
-              std::ref(lmIds), std::ref(hps_W), std::ref(ctrs));
+              std::ref(lmIds), std::ref(hps_W), std::ref(ctrs), std::cref(currentFloatDescriptors2));
     }
 
     for(size_t t = 0; t<num_matching_threads; ++t) {
@@ -1521,7 +1733,7 @@ void Frontend::matchToMapByThread(
     size_t numKeypoints, const MapPoints& pointMap,
     size_t im, const MultiFramePtr&  multiFrame, std::vector<double>& distances,
     std::vector<LandmarkId>& lmIds, AlignedVector<Eigen::Vector4d>& hps_W,
-    std::vector<size_t>& ctrs) const {
+    std::vector<size_t>& ctrs, const cv::Mat& currentFloatDescriptors) const {
 
   const kinematics::Transformation T_SC = *multiFrame->T_SC(im);
   const kinematics::Transformation T_WC1 = T_WS1 * T_SC;
@@ -1531,6 +1743,11 @@ void Frontend::matchToMapByThread(
   const double reprojectionThresholdSq = reprojectionThreshold * reprojectionThreshold;
 
   ctrs[threadIdx] = 0;
+
+  // Check if we can use float descriptor matching
+  bool use_float_matching = !currentFloatDescriptors.empty() && 
+                            currentFloatDescriptors.type() == CV_32F &&
+                            params.frontend.use_superpoint;
 
   // go through all landmarks
   const size_t segment = numKeypoints/numThreads;
@@ -1575,14 +1792,41 @@ void Frontend::matchToMapByThread(
         continue;
       }
 
-      const uchar* descriptorK = ddata + k*48;
-      for(int d = 0; d<it->second.descriptors.rows; ++d) {
-        const double dist = brisk::Hamming::PopcntofXORed(
-            descriptorK,
-            it->second.descriptors.data + d*48, 3);
-        if(dist < distances[k]) {
-          distances[k] = dist;
-          lmIds[k] = it->first;
+      // Use float descriptor matching (cosine similarity) if available
+      if (use_float_matching && it->second.has_float_descriptors && 
+          static_cast<size_t>(k) < static_cast<size_t>(currentFloatDescriptors.rows)) {
+        const float* currentDesc = currentFloatDescriptors.ptr<float>(k);
+        for(int d = 0; d < it->second.float_descriptors.rows; ++d) {
+          const float* lmDesc = it->second.float_descriptors.ptr<float>(d);
+          // Compute cosine similarity (higher is better, convert to distance: lower is better)
+          float dotProduct = 0.0f;
+          float normCurrent = 0.0f;
+          float normLm = 0.0f;
+          for (int i = 0; i < 256; ++i) {
+            dotProduct += currentDesc[i] * lmDesc[i];
+            normCurrent += currentDesc[i] * currentDesc[i];
+            normLm += lmDesc[i] * lmDesc[i];
+          }
+          float cosineSim = dotProduct / (std::sqrt(normCurrent) * std::sqrt(normLm) + 1e-8f);
+          // Convert to distance: dist = (1 - cosineSim) * scale
+          // Scale to be comparable with BRISK threshold (0-255 range)
+          double dist = (1.0 - cosineSim) * 128.0;  // Scale factor to match BRISK range
+          if(dist < distances[k]) {
+            distances[k] = dist;
+            lmIds[k] = it->first;
+          }
+        }
+      } else {
+        // Fall back to BRISK Hamming distance matching
+        const uchar* descriptorK = ddata + k*48;
+        for(int d = 0; d<it->second.descriptors.rows; ++d) {
+          const double dist = brisk::Hamming::PopcntofXORed(
+              descriptorK,
+              it->second.descriptors.data + d*48, 3);
+          if(dist < distances[k]) {
+            distances[k] = dist;
+            lmIds[k] = it->first;
+          }
         }
       }
     }
@@ -1600,7 +1844,7 @@ void Frontend::matchToMapByThreadUnitialised(
     size_t numKeypoints, const MapPoints& pointMap,
     size_t im, const MultiFramePtr&  multiFrame, std::vector<double>& distances,
     std::vector<LandmarkId>& lmIds, AlignedVector<Eigen::Vector4d>& hps_W,
-    std::vector<size_t>& ctrs) const {
+    std::vector<size_t>& ctrs, const cv::Mat& currentFloatDescriptors) const {
 
   const kinematics::Transformation T_SC = *multiFrame->T_SC(im);
   const kinematics::Transformation T_WC1 = T_WS1 * T_SC;
@@ -1647,6 +1891,12 @@ void Frontend::matchToMapByThreadUnitialised(
       }
     }
 
+    // Check if we can use float descriptor matching
+    bool use_float_matching = !currentFloatDescriptors.empty() && 
+                              currentFloatDescriptors.type() == CV_32F &&
+                              params.frontend.use_superpoint &&
+                              it->second.has_float_descriptors;
+
     // match all present descriptors
     for(size_t k = startK; k < endK; k++) {
 
@@ -1656,63 +1906,96 @@ void Frontend::matchToMapByThreadUnitialised(
 
       // also check epipolar distance (later)
       const Eigen::Vector3d e1_W=e_Ws.col(k);
-      const uchar* descriptorK = ddata + k*48;
-      for(int d = 0; d<it->second.descriptors.rows; ++d) {
-        const double dist = brisk::Hamming::PopcntofXORed(
-            descriptorK, it->second.descriptors.data + d*48, 3);
-
-        if(dist < distances[k]) {
-
-          // epipolar distance check
-          const Eigen::Vector3d e0_W = it->second.e_W.col(d);
-          const Eigen::Vector3d r0_W = it->second.r_W.col(d);
-
-          if(e0_W.dot(e1_W)<cos6Sigma) { // otherwise parallel... will be OK.
-            const Eigen::Vector3d et_W = (T_WC1.r() - r0_W).normalized();
-            const Eigen::Vector3d n0_W = e0_W.cross(et_W).normalized();
-            const Eigen::Vector3d n1_W = e1_W.cross(et_W).normalized();
-            if((n0_W.dot(n1_W) < cos6Sigma)) {
-              continue; // not in epipolar plane
-            }
-            if((e0_W.cross(e1_W)).dot((n0_W + n0_W).normalized())>0.0) {
-              continue; // divergent rays
-            }
+      
+      double dist = briskMatchingThreshold_;
+      int best_d = -1;
+      
+      if (use_float_matching && 
+          static_cast<size_t>(k) < static_cast<size_t>(currentFloatDescriptors.rows)) {
+        // Float descriptor matching (cosine similarity)
+        const float* currentDesc = currentFloatDescriptors.ptr<float>(k);
+        for(int d = 0; d < it->second.float_descriptors.rows; ++d) {
+          const float* lmDesc = it->second.float_descriptors.ptr<float>(d);
+          float dotProduct = 0.0f;
+          float normCurrent = 0.0f;
+          float normLm = 0.0f;
+          for (int i = 0; i < 256; ++i) {
+            dotProduct += currentDesc[i] * lmDesc[i];
+            normCurrent += currentDesc[i] * currentDesc[i];
+            normLm += lmDesc[i] * lmDesc[i];
           }
-
-          // try triangulation
-          bool isValid = false;
-          bool isParallel = false;
-          Eigen::Vector4d hp_W = triangulation::triangulateFast(
-              r0_W, e0_W, T_WC1.r(), e1_W, sigma, isValid, isParallel);
-
-          if(!isValid) {
-            continue;
+          float cosineSim = dotProduct / (std::sqrt(normCurrent) * std::sqrt(normLm) + 1e-8f);
+          double d_dist = (1.0 - cosineSim) * 128.0;
+          if(d_dist < dist) {
+            dist = d_dist;
+            best_d = d;
           }
+        }
+      } else {
+        // BRISK Hamming distance matching
+        const uchar* descriptorK = ddata + k*48;
+        for(int d = 0; d<it->second.descriptors.rows; ++d) {
+          const double d_dist = brisk::Hamming::PopcntofXORed(
+              descriptorK, it->second.descriptors.data + d*48, 3);
+          if(d_dist < dist) {
+            dist = d_dist;
+            best_d = d;
+          }
+        }
+      }
 
-          // check if too close (out of focus)
-          const Eigen::Vector3d p_W = hp_W.head<3>()/hp_W[3];
-          if(!isParallel) {
-            if((p_W-r0_W).norm() < 0.2) {
-              isValid = false;
-            }
-            if((p_W-T_WC1.r()).norm() < 0.2) {
-              isValid = false;
-            }
-          }
-          if(!isValid) {
-            continue;
-          }
+      if(best_d >= 0 && dist < distances[k]) {
+        int d = best_d;
 
-          if(it->first.value()==previousIds[k]) {
-            ctrs[threadIdx]++; // still counts, already correct match...
-            break; // the match is already done...
-          }
+        // epipolar distance check
+        const Eigen::Vector3d e0_W = it->second.e_W.col(d);
+        const Eigen::Vector3d r0_W = it->second.r_W.col(d);
 
-          distances[k] = dist;
-          lmIds[k] = it->first;
-          if(!isParallel) {
-            hps_W[k] = hp_W;
+        if(e0_W.dot(e1_W)<cos6Sigma) { // otherwise parallel... will be OK.
+          const Eigen::Vector3d et_W = (T_WC1.r() - r0_W).normalized();
+          const Eigen::Vector3d n0_W = e0_W.cross(et_W).normalized();
+          const Eigen::Vector3d n1_W = e1_W.cross(et_W).normalized();
+          if((n0_W.dot(n1_W) < cos6Sigma)) {
+            continue; // not in epipolar plane
           }
+          if((e0_W.cross(e1_W)).dot((n0_W + n0_W).normalized())>0.0) {
+            continue; // divergent rays
+          }
+        }
+
+        // try triangulation
+        bool isValid = false;
+        bool isParallel = false;
+        Eigen::Vector4d hp_W = triangulation::triangulateFast(
+            r0_W, e0_W, T_WC1.r(), e1_W, sigma, isValid, isParallel);
+
+        if(!isValid) {
+          continue;
+        }
+
+        // check if too close (out of focus)
+        const Eigen::Vector3d p_W = hp_W.head<3>()/hp_W[3];
+        if(!isParallel) {
+          if((p_W-r0_W).norm() < 0.2) {
+            isValid = false;
+          }
+          if((p_W-T_WC1.r()).norm() < 0.2) {
+            isValid = false;
+          }
+        }
+        if(!isValid) {
+          continue;
+        }
+
+        if(it->first.value()==previousIds[k]) {
+          ctrs[threadIdx]++; // still counts, already correct match...
+          break; // the match is already done...
+        }
+
+        distances[k] = dist;
+        lmIds[k] = it->first;
+        if(!isParallel) {
+          hps_W[k] = hp_W;
         }
       }
     }
@@ -1803,12 +2086,113 @@ int Frontend::matchMotionStereo(Estimator& estimator, const ViParameters &params
 
       AlignedVector<MatchInfo> matchInfos(k0Size);
 
+      // Check if we can use LightGlue for matching
+      bool use_lightglue_motionstereo = false;
+      std::map<size_t, std::pair<size_t, float>> lightglue_matches; // k0 -> (k1, confidence)
+      
+#ifdef OKVIS_USE_LIGHTGLUE
+      if (params.frontend.use_lightglue && params.frontend.use_superpoint && 
+          lightglue_matcher_ && lightglue_matcher_->isInitialized()) {
+        // Check if float descriptors are available for both frames
+        auto it0 = float_descriptors_.find(olderFrameId.value());
+        auto it1 = float_descriptors_.find(currentFrameId);
+        
+        if (it0 != float_descriptors_.end() && it1 != float_descriptors_.end() &&
+            im < it0->second.size() && im < it1->second.size() &&
+            !it0->second[im].empty() && !it1->second[im].empty() &&
+            it0->second[im].type() == CV_32F && it1->second[im].type() == CV_32F) {
+          
+          // Prepare keypoints for frame0 (only unmatched/uninitialised)
+          std::vector<cv::KeyPoint> keypoints0;
+          std::vector<size_t> k0_indices;  // Map from keypoints0 index to k0
+          cv::Mat desc0_float;
+          
+          for (size_t k0 = 0; k0 < k0Size; ++k0) {
+            uint64_t id0 = multiFrame0->landmarkId(im, k0);
+            if (id0) {
+              if (!estimator.isLandmarkAdded(LandmarkId(id0))) continue;
+              if (estimator.isLandmarkInitialised(LandmarkId(id0))) continue;
+            }
+            if (estimator.isObserved(KeypointIdentifier{olderFrameId.value(), im, k0})) continue;
+            
+            Eigen::Vector2d pt0;
+            multiFrame0->getKeypoint(im, k0, pt0);
+            double size0;
+            multiFrame0->getKeypointSize(im, k0, size0);
+            keypoints0.push_back(cv::KeyPoint(cv::Point2f(pt0.x(), pt0.y()), size0));
+            k0_indices.push_back(k0);
+          }
+          
+          // Prepare keypoints for frame1 (k1s - unmatched)
+          std::vector<cv::KeyPoint> keypoints1;
+          for (size_t kk = 0; kk < k1s.size(); ++kk) {
+            size_t k1 = k1s[kk];
+            Eigen::Vector2d pt1;
+            multiFrame1->getKeypoint(im, k1, pt1);
+            double size1;
+            multiFrame1->getKeypointSize(im, k1, size1);
+            keypoints1.push_back(cv::KeyPoint(cv::Point2f(pt1.x(), pt1.y()), size1));
+          }
+          
+          if (!keypoints0.empty() && !keypoints1.empty()) {
+            // Extract float descriptors for the selected keypoints
+            const cv::Mat& full_desc0 = it0->second[im];
+            const cv::Mat& full_desc1 = it1->second[im];
+            
+            // Build desc0_float from k0_indices
+            desc0_float = cv::Mat(k0_indices.size(), 256, CV_32F);
+            for (size_t i = 0; i < k0_indices.size(); ++i) {
+              size_t k0 = k0_indices[i];
+              if (k0 < static_cast<size_t>(full_desc0.rows)) {
+                full_desc0.row(k0).copyTo(desc0_float.row(i));
+              }
+            }
+            
+            // Build desc1_float from k1s
+            cv::Mat desc1_float = cv::Mat(k1s.size(), 256, CV_32F);
+            for (size_t kk = 0; kk < k1s.size(); ++kk) {
+              size_t k1 = k1s[kk];
+              if (k1 < static_cast<size_t>(full_desc1.rows)) {
+                full_desc1.row(k1).copyTo(desc1_float.row(kk));
+              }
+            }
+            
+            // Get image sizes for keypoint normalization
+            cv::Size image_size(static_cast<int>(camera->imageWidth()), 
+                               static_cast<int>(camera->imageHeight()));
+            
+            // Run LightGlue matching
+            std::vector<LightGlueMatcher::Match> lg_matches;
+            if (lightglue_matcher_->match(keypoints0, desc0_float, keypoints1, desc1_float, 
+                                          image_size, image_size, lg_matches)) {
+              use_lightglue_motionstereo = true;
+              
+              // Store matches: query_idx (in keypoints0) -> k1s[train_idx], confidence
+              for (const auto& m : lg_matches) {
+                if (m.confidence >= params.frontend.lightglue_match_threshold) {
+                  size_t k0 = k0_indices[m.query_idx];  // Map back to original k0
+                  size_t k1 = k1s[m.train_idx];         // Map back to original k1
+                  
+                  // Store best match per k0
+                  auto existing = lightglue_matches.find(k0);
+                  if (existing == lightglue_matches.end() || m.confidence > existing->second.second) {
+                    lightglue_matches[k0] = std::make_pair(k1, m.confidence);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+#endif
+
       // vector container stores threads
       std::vector<std::thread> workers;
       for (size_t t = 0; t < size_t(params.frontend.num_matching_threads); t++) {
         workers.push_back(std::thread([this, t, k0Size, im, &multiFrame0, &estimator, f0, k1s,
                                       &T_WC0, &T_WC1, &multiFrame1, &olderFrameId, &matchInfos,
-                                       &params, &camera, desc1]() {
+                                       &params, &camera, desc1, use_lightglue_motionstereo, 
+                                       &lightglue_matches]() {
           for(size_t k0 = t; k0 < k0Size; k0 += size_t(params.frontend.num_matching_threads)) {
             uint64_t id0 = multiFrame0->landmarkId(im, k0);
             if(id0) {
@@ -1841,6 +2225,62 @@ int Frontend::matchMotionStereo(Estimator& estimator, const ViParameters &params
               continue; // already matched
             }
 
+            // Use LightGlue match if available, otherwise fall back to BRISK
+            if (use_lightglue_motionstereo) {
+              auto lg_it = lightglue_matches.find(k0);
+              if (lg_it != lightglue_matches.end()) {
+                size_t k1 = lg_it->second.first;
+                
+                // Triangulate and verify
+                bool isValid = false;
+                bool isParallel = false;
+                Eigen::Vector3d e1_C;
+                if(multiFrame1->getBackProjection(im, k1, e1_C)) {
+                  const Eigen::Vector3d e1_W = (T_WC1.C()*e1_C).normalized();
+                  if(e0_W.dot(e1_W) >= 0.5) {
+                    Eigen::Vector4d hp_W = triangulation::triangulateFast(
+                          T_WC0.r(), e0_W, T_WC1.r(), e1_W, sigma, isValid, isParallel);
+                    
+                    if(isValid) {
+                      const Eigen::Vector4d hp_C0 = (T_WC0.inverse()*hp_W);
+                      const Eigen::Vector4d hp_C1 = (T_WC1.inverse()*hp_W);
+                      
+                      if(e0_W.transpose()*e1_W < 0.8) {
+                        isValid = false;
+                      }
+                      
+                      if(!isParallel && isValid) {
+                        hp_W = hp_W/hp_W[3];
+                        if(hp_C0[2]/hp_C0[3] < 0.2 || hp_C1[2]/hp_C1[3] < 0.2) {
+                          isValid = false;
+                        }
+                      }
+                      
+                      if(isValid) {
+                        k1_max = k1;
+                        distances = 0; // LightGlue match, set distance to 0
+                        quality = acos((hp_W.head<3>()-T_WC0.r()).normalized()
+                                       .dot((hp_W.head<3>()-T_WC1.r()).normalized()));
+                        hps_W = hp_W;
+                        initialisable = !isParallel;
+                        
+                        // Verify reprojection
+                        Eigen::Vector2d pt1p;
+                        Eigen::Vector2d pt1;
+                        multiFrame1->getKeypoint(im, k1, pt1);
+                        auto s1 = camera->projectHomogeneous(T_WC1.inverse()*hps_W, &pt1p);
+                        if(s1 == cameras::ProjectionStatus::Successful && (pt1-pt1p).norm()<4.0) {
+                          matchInfos[k0] = MatchInfo{hps_W, k1_max, true, initialisable, quality};
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              continue; // Skip BRISK matching for this k0
+            }
+
+            // BRISK matching (fallback)
             for(size_t kk = 0; kk < k1s.size(); ++kk) {
               const size_t k1 = k1s[kk];
               const uint32_t dist = brisk::Hamming::PopcntofXORed(
@@ -2013,10 +2453,199 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
         const auto camera1 = multiFrame->geometryAs<CAMERA_GEOMETRY>(im1);
         const double f0 = 0.5* (camera0->focalLengthU() + camera0->focalLengthV());
         const double f1 = 0.5* (camera1->focalLengthU() + camera1->focalLengthV());
-        for(size_t k0 = 0; k0 < k0Size; ++k0) {
 
+        // Extract keypoints and descriptors for matching
+        std::vector<cv::KeyPoint> keypoints0, keypoints1;
+        cv::Mat descriptors0, descriptors1;
+        
+        for (size_t k = 0; k < k0Size; ++k) {
+          Eigen::Vector2d pt;
+          multiFrame->getKeypoint(im0, k, pt);
+          double size;
+          multiFrame->getKeypointSize(im0, k, size);
+          keypoints0.push_back(cv::KeyPoint(cv::Point2f(pt.x(), pt.y()), size));
+        }
+        
+        for (size_t k = 0; k < k1Size; ++k) {
+          Eigen::Vector2d pt;
+          multiFrame->getKeypoint(im1, k, pt);
+          double size;
+          multiFrame->getKeypointSize(im1, k, size);
+          keypoints1.push_back(cv::KeyPoint(cv::Point2f(pt.x(), pt.y()), size));
+        }
+        
+        // Get descriptors - handle both BRISK (48 bytes) and SuperPoint (256 float)
+        bool use_lightglue = false;
+        
+#ifdef OKVIS_USE_LIGHTGLUE
+        // Check if we should use LightGlue and if float descriptors are available
+        if (params.frontend.use_lightglue && lightglue_matcher_ && lightglue_matcher_->isInitialized() &&
+            params.frontend.use_superpoint) {
+          uint64_t frameId = multiFrame->id();
+          auto it = float_descriptors_.find(frameId);
+          if (it != float_descriptors_.end() && 
+              !it->second[im0].empty() && !it->second[im1].empty() &&
+              it->second[im0].type() == CV_32F && it->second[im1].type() == CV_32F) {
+            // Use float descriptors for LightGlue matching
+            descriptors0 = it->second[im0];
+            descriptors1 = it->second[im1];
+            use_lightglue = true;
+          }
+        }
+#endif
+
+        // If not using LightGlue, use BRISK descriptors (48 bytes)
+        if (!use_lightglue) {
+          if (k0Size > 0) {
+            descriptors0 = cv::Mat(k0Size, 48, CV_8U);
+            for (size_t k = 0; k < k0Size; ++k) {
+              const uchar* desc = multiFrame->keypointDescriptor(im0, k);
+              std::copy(desc, desc + 48, descriptors0.ptr<uchar>(k));
+            }
+          }
+          
+          if (k1Size > 0) {
+            descriptors1 = cv::Mat(k1Size, 48, CV_8U);
+            for (size_t k = 0; k < k1Size; ++k) {
+              const uchar* desc = multiFrame->keypointDescriptor(im1, k);
+              std::copy(desc, desc + 48, descriptors1.ptr<uchar>(k));
+            }
+          }
+        }
+
+        // Use LightGlue or BRISK matching
+        std::vector<std::pair<size_t, size_t>> frame_matches;
+
+        if (use_lightglue) {
+          // Use LightGlue matching
+#ifdef OKVIS_USE_LIGHTGLUE
+          // Get image sizes for keypoint normalization
+          cv::Size image0_size(static_cast<int>(camera0->imageWidth()), 
+                               static_cast<int>(camera0->imageHeight()));
+          cv::Size image1_size(static_cast<int>(camera1->imageWidth()), 
+                               static_cast<int>(camera1->imageHeight()));
+          
+          std::vector<LightGlueMatcher::Match> lg_matches;
+          if (lightglue_matcher_->match(keypoints0, descriptors0, keypoints1, descriptors1, 
+                                        image0_size, image1_size, lg_matches)) {
+            // Convert LightGlue matches to frame_matches format
+            for (const auto& m : lg_matches) {
+              // Apply confidence threshold
+              if (m.confidence >= params.frontend.lightglue_match_threshold) {
+                frame_matches.push_back(std::make_pair(m.query_idx, m.train_idx));
+              }
+            }
+            
+            // Process LightGlue matches similar to BRISK matches
+            for (const auto& match_pair : frame_matches) {
+              size_t k0 = match_pair.first;
+              size_t k1 = match_pair.second;
+              
+              if (k0 >= k0Size || k1 >= k1Size) continue;
+              
+              double size0, size1;
+              multiFrame->getKeypointSize(im0, k0, size0);
+              multiFrame->getKeypointSize(im1, k1, size1);
+              Eigen::Vector2d pt0, pt1;
+              multiFrame->getKeypoint(im0, k0, pt0);
+              multiFrame->getKeypoint(im1, k1, pt1);
+              const double sigma = std::max(size0/f0, size1/f1) * 0.125;
+
+              // triangulate
+              bool isValid = false;
+              bool isParallel = false;
+              Eigen::Vector3d e0_C, e1_C;
+              if(!multiFrame->getBackProjection(im0, k0, e0_C)) continue;
+              if(!multiFrame->getBackProjection(im1, k1, e1_C)) continue;
+              Eigen::Vector3d e0_W = (T_WC0.C()*e0_C).normalized();
+              Eigen::Vector3d e1_W = (T_WC1.C()*e1_C).normalized();
+              Eigen::Vector4d hp_W = triangulation::triangulateFast(
+                    T_WC0.r(), e0_W, T_WC1.r(), e1_W, sigma, isValid, isParallel);
+
+              // check if too close
+              const Eigen::Vector4d hp_C0 = (T_WC0.inverse()*hp_W);
+              const Eigen::Vector4d hp_C1 = (T_WC1.inverse()*hp_W);
+              if(!isParallel) {
+                hp_W = hp_W/hp_W[3];
+
+                if(hp_C0[2]/hp_C0[3] < 0.05) {
+                  isValid = false;
+                }
+                if(hp_C1[2]/hp_C1[3] <  0.05) {
+                  isValid = false;
+                }
+
+                if(e0_W.transpose()*e1_W < 0.8) {
+                  isValid = false;
+                }
+              }
+
+              // add observations and initialise
+              if(isValid) {
+                bool initialisable = !isParallel;
+                uint64_t lmId = 0;
+                const uint64_t id0 = multiFrame->landmarkId(im0, k0);
+                const uint64_t id1 = multiFrame->landmarkId(im1, k1);
+                bool add0 = false;
+                bool add1 = false;
+                if(id0 && id1) {
+                  if(!estimator.isLandmarkInitialised(LandmarkId(id0))) {
+                    if(initialisable) {
+                      estimator.setLandmark(LandmarkId(id0), hp_W, true);
+                    }
+                  }
+                } else if(id1) {
+                  lmId = id1;
+                  add0 = true;
+                } else if(id0) {
+                  lmId = id0;
+                  add1 = true;
+                } else {
+                  if(!asKeyframe){
+                    continue;
+                  }
+                  add0 = true;
+                  add1 = true;
+                  lmId = estimator.addLandmark(hp_W, initialisable).value();
+                }
+                
+                if(add0) {
+                  Eigen::Vector2d pt0p;
+                  MapPoint2 mapPoint;
+                  estimator.getLandmark(LandmarkId(lmId), mapPoint);
+                  Eigen::Vector4d hp_eff_W = mapPoint.point;
+                  auto s0 = camera0->projectHomogeneous(T_WC0.inverse()*hp_eff_W, &pt0p);
+                  if(s0 == cameras::ProjectionStatus::Successful && (pt0-pt0p).norm()<4.0) {
+                    multiFrame->setLandmarkId(im0, k0, lmId);
+                    estimator.addObservation<CAMERA_GEOMETRY>(LandmarkId(lmId), StateId(mfId), im0, k0);
+                  }
+                }
+                if(add1) {
+                  Eigen::Vector2d pt1p;
+                  MapPoint2 mapPoint;
+                  estimator.getLandmark(LandmarkId(lmId), mapPoint);
+                  Eigen::Vector4d hp_eff_W = mapPoint.point;
+                  auto s1 = camera1->projectHomogeneous(T_WC1.inverse()*hp_eff_W, &pt1p);
+                  if(s1 == cameras::ProjectionStatus::Successful && (pt1-pt1p).norm()<4.0) {
+                    multiFrame->setLandmarkId(im1, k1, lmId);
+                    estimator.addObservation<CAMERA_GEOMETRY>(
+                      LandmarkId(lmId), StateId(mfId), im1, k1);
+                  }
+                }
+              }
+            }
+          } else {
+            LOG(WARNING) << "LightGlue matching failed, falling back to BRISK";
+            use_lightglue = false; // Fallback to BRISK
+          }
+#endif
+        }
+        
+        if (!use_lightglue) {
+          // Use BRISK matching (original logic)
+          for(size_t k0 = 0; k0 < k0Size; ++k0) {
           double distances = briskMatchingThreshold_;
-          bool initialisable=  false;
+            bool initialisable = false;
           Eigen::Vector4d hps_W;
           size_t k1_match = 0;
 
@@ -2136,6 +2765,7 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
                 multiFrame->setLandmarkId(im1, k1_match, lmId);
                 estimator.addObservation<CAMERA_GEOMETRY>(
                   LandmarkId(lmId), StateId(mfId), im1, k1_match);
+                }
               }
             }
           }
@@ -2414,6 +3044,158 @@ void Frontend::initialiseBriskFeatureDetectors() {
   for (auto it = featureDetectorMutexes_.begin(); it != featureDetectorMutexes_.end(); ++it) {
     (*it)->unlock();
   }
+}
+
+bool Frontend::initializeSuperPointLightGlue(const okvis::ViParameters& params) {
+  params_ptr_ = const_cast<okvis::ViParameters*>(&params);
+  
+#ifdef OKVIS_USE_SUPERPOINT
+  if (params.frontend.use_superpoint) {
+    // SuperVINS style: use extractor_weight_path, fallback to superpoint_model_path (legacy)
+    std::string extractor_path = params.frontend.extractor_weight_path;
+    if (extractor_path.empty()) {
+      extractor_path = params.frontend.superpoint_model_path;
+    }
+    
+    if (extractor_path.empty()) {
+      LOG(ERROR) << "SuperPoint enabled but model path not specified (extractor_weight_path or superpoint_model_path)";
+      return false;
+    }
+
+    superpoint_extractors_.clear();
+    superpoint_extractors_.resize(numCameras_);
+    
+    bool use_gpu = params.frontend.use_gpu_for_nn;
+#ifdef OKVIS_USE_GPU
+    if (!use_gpu) {
+      use_gpu = true; // Use GPU if available even if not explicitly set
+    }
+#endif
+
+    for (size_t i = 0; i < numCameras_; ++i) {
+      superpoint_extractors_[i] = std::make_shared<SuperPointExtractor>(
+          extractor_path,
+          params.frontend.superpoint_max_keypoints > 0 ? 
+              params.frontend.superpoint_max_keypoints : 2048,
+          params.frontend.superpoint_keypoint_threshold > 0.0f ? 
+              params.frontend.superpoint_keypoint_threshold : 0.015f,
+          use_gpu,
+          params.frontend.use_clahe);
+      
+      if (!superpoint_extractors_[i]->isInitialized()) {
+        LOG(ERROR) << "Failed to initialize SuperPoint extractor for camera " << i 
+                   << " with model: " << extractor_path;
+        return false;
+      }
+    }
+    LOG(INFO) << "SuperPoint extractors initialized for " << numCameras_ << " cameras"
+              << " using model: " << extractor_path;
+  }
+#endif
+
+#ifdef OKVIS_USE_LIGHTGLUE
+  if (params.frontend.use_lightglue) {
+    // SuperVINS style: use matcher_weight_path, fallback to lightglue_model_path (legacy)
+    std::string matcher_path = params.frontend.matcher_weight_path;
+    if (matcher_path.empty()) {
+      matcher_path = params.frontend.lightglue_model_path;
+    }
+    
+    // If using fused model, matcher_path might be empty (use extractor_path)
+    if (matcher_path.empty() && params.frontend.use_fused_model) {
+      matcher_path = params.frontend.extractor_weight_path;
+      if (matcher_path.empty()) {
+        matcher_path = params.frontend.superpoint_model_path;
+      }
+    }
+    
+    if (matcher_path.empty()) {
+      LOG(ERROR) << "LightGlue enabled but model path not specified (matcher_weight_path or lightglue_model_path)";
+      return false;
+    }
+
+    bool use_gpu = params.frontend.use_gpu_for_nn;
+#ifdef OKVIS_USE_GPU
+    if (!use_gpu) {
+      use_gpu = true; // Use GPU if available even if not explicitly set
+    }
+#endif
+
+    // Determine extractor type (0=SUPERPOINT, 1=DISK, etc.)
+    int extractor_type = 0;  // Default to SuperPoint
+    if (params.frontend.use_superpoint) {
+      extractor_type = 0;  // SUPERPOINT
+    }
+    // Add other extractor types as needed
+    
+    lightglue_matcher_ = std::make_shared<LightGlueMatcher>(
+        matcher_path,
+        params.frontend.lightglue_match_threshold > 0.0f ? 
+            params.frontend.lightglue_match_threshold : 0.5f,  // SuperVINS default is 0.5
+        use_gpu,
+        extractor_type);
+    
+    if (!lightglue_matcher_->isInitialized()) {
+      LOG(ERROR) << "Failed to initialize LightGlue matcher with model: " << matcher_path;
+      return false;
+    }
+    LOG(INFO) << "LightGlue matcher initialized using model: " << matcher_path;
+  }
+#endif
+
+  return true;
+}
+
+bool Frontend::matchFrames(const std::vector<cv::KeyPoint>& keypoints0,
+                            const cv::Mat& descriptors0,
+                            const std::vector<cv::KeyPoint>& keypoints1,
+                            const cv::Mat& descriptors1,
+                            std::vector<std::pair<size_t, size_t>>& matches) {
+  matches.clear();
+
+#ifdef OKVIS_USE_LIGHTGLUE
+  if (params_ptr_ && params_ptr_->frontend.use_lightglue && 
+      lightglue_matcher_ && lightglue_matcher_->isInitialized()) {
+    
+    // Use LightGlue for matching
+    std::vector<Match> lightglue_matches;
+    if (lightglue_matcher_->match(keypoints0, descriptors0, keypoints1, descriptors1, lightglue_matches)) {
+      matches.reserve(lightglue_matches.size());
+      for (const auto& m : lightglue_matches) {
+        matches.push_back({static_cast<size_t>(m.query_idx), static_cast<size_t>(m.train_idx)});
+      }
+      return true;
+    } else {
+      LOG(WARNING) << "LightGlue matching failed, falling back to BRISK";
+      // Fallback to BRISK
+    }
+  }
+#endif
+
+  // Use BRISK matching (default or fallback)
+  matches.clear();
+  matches.reserve(std::min(keypoints0.size(), keypoints1.size()));
+  
+  for (size_t i = 0; i < keypoints0.size(); ++i) {
+    const uchar* desc0 = descriptors0.ptr<uchar>(i);
+    uint32_t distMin = briskMatchingThreshold_;
+    size_t bestMatch = keypoints1.size(); // Invalid index
+    
+    for (size_t j = 0; j < keypoints1.size(); ++j) {
+      const uchar* desc1 = descriptors1.ptr<uchar>(j);
+      const uint32_t dist = brisk::Hamming::PopcntofXORed(desc0, desc1, 3);
+      if (dist < distMin) {
+        distMin = dist;
+        bestMatch = j;
+      }
+    }
+    
+    if (bestMatch < keypoints1.size()) {
+      matches.push_back({i, bestMatch});
+    }
+  }
+  
+  return true;
 }
 
 }  // namespace okvis

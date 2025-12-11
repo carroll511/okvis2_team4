@@ -109,23 +109,49 @@ frontend_parameters:
     octaves: 0 # number of octaves for detection. 0 means single-scale at highest resolution
     max_num_keypoints: 700 # restrict to a maximum of this many keypoints per image (strongest ones)
     keyframe_overlap: 0.59 # minimum field-of-view overlap
-    use_cnn: true # use the CNN (if available) to filter out dynamic content / sky
+    use_cnn: false # use the CNN (if available) to filter out dynamic content / sky
     parallelise_detection: true # Run parallel detect & describe.
-    num_matching_threads: 4 # Parallelise matching with this number of threads.
+    num_matching_threads: 6 # Parallelise matching with this number of threads.
+    
+    # SuperPoint & LightGlue parameters (SuperVINS style)
+    # Model paths (SuperVINS style - supports both separate and fused models)
+    extractor_weight_path: "/workspace/models/superpoint.onnx" # Path to extractor ONNX model (SuperPoint or fused model)
+    matcher_weight_path: "/workspace/models/lightglue.onnx" # Path to matcher ONNX model (LightGlue or fused model)
+    
+    # 또는 fused 모델 사용
+    # extractor_weight_path: "/workspace/models/superpoint_lightglue_fused_cpu.onnx"
+    # matcher_weight_path: ""  # fused 모델 사용 시 비워둠
+    # use_fused_model: true
+
+    # Legacy paths (for backward compatibility)
+    superpoint_model_path: "/workspace/models/superpoint.onnx" # Path to SuperPoint ONNX model (legacy, use extractor_weight_path instead)
+    lightglue_model_path: "/workspace/models/lightglue.onnx" # Path to LightGlue ONNX model (legacy, use matcher_weight_path instead)
+    
+    # Feature extraction and matching flags
+    use_superpoint: true # Use SuperPoint for feature detection and description
+    use_lightglue: true # Use LightGlue for feature matching
+    use_fused_model: false # Use fused SuperPoint+LightGlue model (auto-detected if extractor_weight_path contains "fused")
+    use_gpu_for_nn: true # Use GPU for neural network inference
+    use_clahe: true # Use CLAHE (Contrast Limited Adaptive Histogram Equalization) for lighting correction. Better for local lighting variations (shadows, reflections) than standard Histogram Equalization.
+    
+    # Thresholds
+    superpoint_keypoint_threshold: 0.012 # SuperPoint keypoint detection threshold
+    superpoint_max_keypoints: 2048 # Maximum number of SuperPoint keypoints
+    lightglue_match_threshold: 0.2 # LightGlue match confidence threshold
 
 # estimator parameters
 estimator_parameters:
-    num_keyframes: 5 # number of keyframes in optimisation window
-    num_loop_closure_frames: 5 # number of loop closure frames in optimisation window
+    num_keyframes: 6 # number of keyframes in optimisation window
+    num_loop_closure_frames: 6 # number of loop closure frames in optimisation window
     num_imu_frames: 3 # number of frames linked by most recent nonlinear IMU error terms
     do_loop_closures: true # whether to do VI-SLAM or VIO
     do_final_ba: true # Whether to run a full final BA
     enforce_realtime: false # whether to limit the time budget for optimisation 
     realtime_min_iterations: 3 # minimum number of iterations always performed
-    realtime_max_iterations: 10 # never do more than these, even if not converged
+    realtime_max_iterations: 12 # never do more than these, even if not converged
     realtime_time_limit: 0.035 # time budget for realtime optimisation [s]
     realtime_num_threads: 4 # number of threads for the realtime optimisation
-    full_graph_iterations: 15 # don't do more than these for the full (background) optimisation
+    full_graph_iterations: 20 # don't do more than these for the full (background) optimisation
     full_graph_num_threads: 2 # number of threads for the full (background) optimisation
 
 # some options for how and what to output

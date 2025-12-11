@@ -15,8 +15,34 @@ if(USE_NN)
   find_package(Torch REQUIRED)
 endif()
 
+if(USE_SUPERPOINT OR USE_LIGHTGLUE)
+  find_path(ONNXRUNTIME_INCLUDE_DIR
+    NAMES onnxruntime_cxx_api.h
+    PATHS
+      /usr/include
+      /usr/local/include
+      ${CMAKE_SOURCE_DIR}/external/onnxruntime/include
+  )
+  
+  find_library(ONNXRUNTIME_LIBRARY
+    NAMES onnxruntime
+    PATHS
+      /usr/lib
+      /usr/local/lib
+      ${CMAKE_SOURCE_DIR}/external/onnxruntime/lib
+  )
+  
+  if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+    message(WARNING "ONNX Runtime not found. SuperPoint/LightGlue will be disabled.")
+    set(USE_SUPERPOINT OFF)
+    set(USE_LIGHTGLUE OFF)
+  else()
+    message(STATUS "Found ONNX Runtime: ${ONNXRUNTIME_LIBRARY}")
+  endif()
+endif()
+
 set(LIB_NAME okvis_frontend)
-add_library(${LIB_NAME}
+set(SOURCES
   include/DBoW2/FBrisk.hpp
   include/okvis/triangulation/stereo_triangulation.hpp
   include/opengv/absolute_pose/FrameNoncentralAbsoluteAdapter.hpp
@@ -32,6 +58,29 @@ add_library(${LIB_NAME}
   src/LoopclosureNoncentralAbsoluteAdapter.cpp
   src/stereo_triangulation.cpp
 )
+
+if(USE_SUPERPOINT OR USE_LIGHTGLUE)
+  list(APPEND SOURCES
+    include/okvis/TransformDPL.hpp
+    src/TransformDPL.cpp
+  )
+endif()
+
+if(USE_SUPERPOINT)
+  list(APPEND SOURCES
+    include/okvis/SuperPointExtractor.hpp
+    src/SuperPointExtractor.cpp
+  )
+endif()
+
+if(USE_LIGHTGLUE)
+  list(APPEND SOURCES
+    include/okvis/LightGlueMatcher.hpp
+    src/LightGlueMatcher.cpp
+  )
+endif()
+
+add_library(${LIB_NAME} ${SOURCES})
 target_include_directories(${LIB_NAME}
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -41,6 +90,7 @@ target_include_directories(${LIB_NAME}
     ${GLOG_INCLUDE_DIRS}
     ${OPENGV_INCLUDE_DIRS}
     ${TORCH_INCLUDE_DIRS}
+    ${ONNXRUNTIME_INCLUDE_DIR}
 )
 target_link_libraries(${LIB_NAME}
   PUBLIC
@@ -57,6 +107,7 @@ target_link_libraries(${LIB_NAME}
     ${OPENGV_LIBRARIES}
     ${OpenCV_LIBS}
     ${TORCH_LIBRARIES}
+    ${ONNXRUNTIME_LIBRARY}
     Ceres::ceres
 )
 target_compile_features(${LIB_NAME} PUBLIC cxx_std_${OKVIS_CXX_STANDARD})
@@ -72,6 +123,14 @@ if(USE_NN)
   if(USE_GPU)
     target_compile_definitions(${LIB_NAME} PUBLIC OKVIS_USE_GPU)
   endif()
+endif()
+
+if(USE_SUPERPOINT)
+  target_compile_definitions(${LIB_NAME} PUBLIC OKVIS_USE_SUPERPOINT)
+endif()
+
+if(USE_LIGHTGLUE)
+  target_compile_definitions(${LIB_NAME} PUBLIC OKVIS_USE_LIGHTGLUE)
 endif()
 add_library(okvis::Frontend ALIAS ${LIB_NAME})
 
