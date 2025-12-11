@@ -130,6 +130,29 @@ struct FrontendParameters {
   bool use_cnn; ///< Use the CNN (if available) to filter out dynamic content / sky.
   bool parallelise_detection; ///< Run parallel detect & describe.
   int num_matching_threads; ///< Parallelise matching with this number of threads.
+  
+  // SuperPoint & LightGlue parameters (SuperVINS style)
+  bool use_superpoint = false; ///< Use SuperPoint for feature extraction instead of BRISK.
+  bool use_lightglue = false; ///< Use LightGlue for feature matching instead of BRISK matching.
+  
+  // Model paths (SuperVINS style - supports both separate and fused models)
+  std::string extractor_weight_path = ""; ///< Path to extractor ONNX model (SuperPoint or fused model).
+  std::string matcher_weight_path = ""; ///< Path to matcher ONNX model (LightGlue or fused model). If empty and extractor_weight_path is fused, use fused model.
+  
+  // Legacy paths (for backward compatibility)
+  std::string superpoint_model_path = ""; ///< Path to SuperPoint ONNX model file (legacy, use extractor_weight_path instead).
+  std::string lightglue_model_path = ""; ///< Path to LightGlue ONNX model file (legacy, use matcher_weight_path instead).
+  
+  // Thresholds
+  float superpoint_keypoint_threshold = 0.015f; ///< SuperPoint keypoint detection threshold.
+  int superpoint_max_keypoints = 2048; ///< Maximum number of SuperPoint keypoints.
+  float lightglue_match_threshold = 0.2f; ///< LightGlue match confidence threshold.
+  
+  // Fused model support
+  bool use_fused_model = false; ///< Use fused SuperPoint+LightGlue model (if extractor_weight_path points to fused model).
+  
+  // GPU support
+  bool use_gpu_for_nn = false; ///< Use GPU for neural network inference (SuperPoint, LightGlue, CNN).
 };
 
 /**

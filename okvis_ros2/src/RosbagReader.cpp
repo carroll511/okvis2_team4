@@ -62,8 +62,9 @@
 namespace okvis {
 
 RosbagReader::RosbagReader(const std::string& path, size_t numCameras,
-                           const std::set<size_t> &syncCameras, const Duration & deltaT) :
-    numCameras_(numCameras), syncCameras_(syncCameras), deltaT_(deltaT) {
+                           const std::set<size_t> &syncCameras, const Duration & deltaT,
+                           const std::string& topicPrefix) :
+    numCameras_(numCameras), syncCameras_(syncCameras), deltaT_(deltaT), topicPrefix_(topicPrefix) {
   streaming_ = false;
   setDatasetPath(path);
   counter_ = 0;
@@ -120,21 +121,33 @@ bool RosbagReader::startStreaming() {
   std::vector<int> numRgbImages(numCameras_, 0);
   std::vector<int> numCamImages(numCameras_, 0);
   std::vector<int> numDepthImages(numCameras_, 0);
+  
+  // Debug: print all available topics
+  LOG(INFO) << "Looking for topics with prefix: " << topicPrefix_;
+  LOG(INFO) << "Available topics in bag:";
   for(const auto & info : metadata.topics_with_message_count) {
-    if(info.topic_metadata.name.compare("/okvis/imu0") == 0) {
+    LOG(INFO) << "  - " << info.topic_metadata.name << " (" << info.message_count << " messages)";
+    
+    // Check for IMU topics
+    if(info.topic_metadata.name.compare(topicPrefix_ + "/imu0") == 0 || 
+       info.topic_metadata.name.compare(topicPrefix_ + "/imu") == 0) {
       numImuMeasurements = info.message_count;
+      LOG(INFO) << "    -> Matched IMU topic!";
     }
+    
+    // Check for camera topics
     for(int i=0; i<int(numCameras_); ++i) {
-      if(info.topic_metadata.name.compare("/okvis/cam"+std::to_string(i)+"/image_raw") == 0) {
+      if(info.topic_metadata.name.compare(topicPrefix_ + "/cam"+std::to_string(i)+"/image_raw") == 0) {
         numCamImages[i] = info.message_count;
         if(i==0) {
           numImages_ =  numCamImages[i];
         }
+        LOG(INFO) << "    -> Matched camera " << i << " topic!";
       }
-      if(info.topic_metadata.name.compare("/okvis/rgb"+std::to_string(i)+"/image_raw") == 0) {
+      if(info.topic_metadata.name.compare(topicPrefix_ + "/rgb"+std::to_string(i)+"/image_raw") == 0) {
         numRgbImages[i] = info.message_count;
       }
-      if(info.topic_metadata.name.compare("/okvis/depth"+std::to_string(i)+"/image_raw") == 0) {
+      if(info.topic_metadata.name.compare(topicPrefix_ + "/depth"+std::to_string(i)+"/image_raw") == 0) {
         numRgbImages[i] = info.message_count;
       }
     }  
@@ -144,7 +157,9 @@ bool RosbagReader::startStreaming() {
   LOG(INFO)<< "No. IMU measurements: " << numImuMeasurements;
   if (numImuMeasurements <= 0) {
     LOG(ERROR)<< "no imu messages present in bag";
-    return -1;
+    LOG(ERROR)<< "Expected IMU topic: " << topicPrefix_ << "/imu0 or " << topicPrefix_ << "/imu";
+    LOG(ERROR)<< "Please check the topic_prefix parameter. For HILTI22 dataset, use: topic_prefix:=/alphasense";
+    return false;
   }
   for(int i=0; i<int(numCameras_); ++i) {
     LOG(INFO)<< "No. cam " << i << " RGB images: " << numRgbImages[i];
@@ -188,7 +203,8 @@ void  RosbagReader::processing() {
     auto topic = serialized_message->topic_name;
     
     // check if IMU
-    if (topic.find("/okvis/imu0") != std::string::npos) {
+    if (topic.find(topicPrefix_ + "/imu0") != std::string::npos || 
+        topic.find(topicPrefix_ + "/imu") != std::string::npos) {
       sensor_msgs::msg::Imu msg;
       rclcpp::Serialization<sensor_msgs::msg::Imu> serialization_info;
       serialization_info.deserialize_message(&extracted_serialized_msg, &msg);
@@ -208,7 +224,7 @@ void  RosbagReader::processing() {
     // check if image
     okvis::Time t_unsynced(0.0);
     for(int i=0; i<int(numCameras_); ++i) {
-      if (topic.find("/okvis/cam"+std::to_string(i)+"/image_raw") != std::string::npos) {
+      if (topic.find(topicPrefix_ + "/cam"+std::to_string(i)+"/image_raw") != std::string::npos) {
         sensor_msgs::msg::Image msg;
         rclcpp::Serialization<sensor_msgs::msg::Image> serialization_info;
         serialization_info.deserialize_message(&extracted_serialized_msg, &msg);
@@ -229,7 +245,7 @@ void  RosbagReader::processing() {
         }
         t_images[i] = time;
       }
-      if (topic.find("/okvis/depth"+std::to_string(i)+"/image_raw") != std::string::npos) {
+      if (topic.find(topicPrefix_ + "/depth"+std::to_string(i)+"/image_raw") != std::string::npos) {
         sensor_msgs::msg::Image msg;
         rclcpp::Serialization<sensor_msgs::msg::Image> serialization_info;
         serialization_info.deserialize_message(&extracted_serialized_msg, &msg);

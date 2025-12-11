@@ -143,6 +143,7 @@ Frontend::Frontend(size_t numCameras, std::string dBowVocDir)
       briskDescriptionScaleInvariance_(false),
       briskMatchingThreshold_(60.0),
       keyframeInsertionOverlapThreshold_(0.55f),
+      params_ptr_(nullptr),
       dBow_(new DBoW(dBowVocDir))
 {
   // create mutexes for feature detectors and descriptor extractors
@@ -246,9 +247,63 @@ bool Frontend::detectAndDescribe(size_t cameraIndex, std::shared_ptr<okvis::Mult
   // ExtractionDirection == gravity direction in camera frame
   Eigen::Vector3d g_in_W(0, 0, -1);
   Eigen::Vector3d extractionDir = T_WC.inverse().C() * g_in_W;
+  // Use SuperPoint if enabled, otherwise use BRISK
+#ifdef OKVIS_USE_SUPERPOINT
+  if (params_ptr_ && params_ptr_->frontend.use_superpoint && 
+      !superpoint_extractors_.empty() && 
+      cameraIndex < superpoint_extractors_.size() &&
+      superpoint_extractors_[cameraIndex] && 
+      superpoint_extractors_[cameraIndex]->isInitialized()) {
+    
+    // Use SuperPoint for feature extraction
+    cv::Mat image = frameOut->image(cameraIndex);
+    if (image.empty()) {
+      LOG(ERROR) << "Empty image for camera " << cameraIndex;
+      return false;
+    }
+
+    std::vector<cv::KeyPoint> keypoints;
+    cv::Mat descriptors;
+    
+    if (!superpoint_extractors_[cameraIndex]->extract(image, keypoints, descriptors)) {
+      LOG(WARNING) << "SuperPoint extraction failed, falling back to BRISK";
+      // Fallback to BRISK - continue to BRISK section below
+    } else {
+      // Set keypoints and descriptors in frame
+      frameOut->resetKeypoints(cameraIndex, keypoints);
+      
+      // Store float descriptors separately for LightGlue matching
+      if (descriptors.type() == CV_32F) {
+        // Store float descriptors for LightGlue
+        uint64_t frameId = frameOut->id();
+        if (float_descriptors_.find(frameId) == float_descriptors_.end()) {
+          float_descriptors_[frameId] = std::vector<cv::Mat>(numCameras_);
+        }
+        float_descriptors_[frameId][cameraIndex] = descriptors.clone();
+        
+        // Also convert to uchar for OKVIS compatibility (used for DBoW, loop closure, etc.)
+        cv::Mat descriptors_uchar;
+        descriptors.convertTo(descriptors_uchar, CV_8U, 255.0);
+        frameOut->resetDescriptors(cameraIndex, descriptors_uchar);
+      } else {
+        frameOut->resetDescriptors(cameraIndex, descriptors);
+      }
+
+      // precompute backprojections
+      frameOut->computeBackProjections(cameraIndex);
+
+      return true;
+    }
+  }
+#endif
+
+  // Use BRISK (default or fallback)
+  // Only set extraction direction for BRISK
+  if (!params_ptr_ || !params_ptr_->frontend.use_superpoint) {
   std::static_pointer_cast<cv::BriskDescriptorExtractor>(descriptorExtractors_[cameraIndex])
       ->setExtractionDirection(
         cv::Vec3f(float(extractionDir[0]),float(extractionDir[1]),float(extractionDir[2])));
+  }
 
   frameOut->setDetector(cameraIndex, featureDetectors_[cameraIndex]);
   frameOut->setExtractor(cameraIndex, descriptorExtractors_[cameraIndex]);
@@ -1050,6 +1105,9 @@ void Frontend::clear()
   endCnnThreads();
   isInitialized_ = false;        // Is the pose initialised?
   dBow_->database.clear();
+#ifdef OKVIS_USE_SUPERPOINT
+  float_descriptors_.clear();  // Clear stored float descriptors
+#endif
   dBow_->poseIds.clear(); // Store the multiframe IDs corresponsind to the dBow ones
   trackingLost_ = false; // Is the tracking currently lost?
 }
@@ -2013,10 +2071,199 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
         const auto camera1 = multiFrame->geometryAs<CAMERA_GEOMETRY>(im1);
         const double f0 = 0.5* (camera0->focalLengthU() + camera0->focalLengthV());
         const double f1 = 0.5* (camera1->focalLengthU() + camera1->focalLengthV());
-        for(size_t k0 = 0; k0 < k0Size; ++k0) {
 
+        // Extract keypoints and descriptors for matching
+        std::vector<cv::KeyPoint> keypoints0, keypoints1;
+        cv::Mat descriptors0, descriptors1;
+        
+        for (size_t k = 0; k < k0Size; ++k) {
+          Eigen::Vector2d pt;
+          multiFrame->getKeypoint(im0, k, pt);
+          double size;
+          multiFrame->getKeypointSize(im0, k, size);
+          keypoints0.push_back(cv::KeyPoint(cv::Point2f(pt.x(), pt.y()), size));
+        }
+        
+        for (size_t k = 0; k < k1Size; ++k) {
+          Eigen::Vector2d pt;
+          multiFrame->getKeypoint(im1, k, pt);
+          double size;
+          multiFrame->getKeypointSize(im1, k, size);
+          keypoints1.push_back(cv::KeyPoint(cv::Point2f(pt.x(), pt.y()), size));
+        }
+        
+        // Get descriptors - handle both BRISK (48 bytes) and SuperPoint (256 float)
+        bool use_lightglue = false;
+        
+#ifdef OKVIS_USE_LIGHTGLUE
+        // Check if we should use LightGlue and if float descriptors are available
+        if (params.frontend.use_lightglue && lightglue_matcher_ && lightglue_matcher_->isInitialized() &&
+            params.frontend.use_superpoint) {
+          uint64_t frameId = multiFrame->id();
+          auto it = float_descriptors_.find(frameId);
+          if (it != float_descriptors_.end() && 
+              !it->second[im0].empty() && !it->second[im1].empty() &&
+              it->second[im0].type() == CV_32F && it->second[im1].type() == CV_32F) {
+            // Use float descriptors for LightGlue matching
+            descriptors0 = it->second[im0];
+            descriptors1 = it->second[im1];
+            use_lightglue = true;
+          }
+        }
+#endif
+
+        // If not using LightGlue, use BRISK descriptors (48 bytes)
+        if (!use_lightglue) {
+          if (k0Size > 0) {
+            descriptors0 = cv::Mat(k0Size, 48, CV_8U);
+            for (size_t k = 0; k < k0Size; ++k) {
+              const uchar* desc = multiFrame->keypointDescriptor(im0, k);
+              std::copy(desc, desc + 48, descriptors0.ptr<uchar>(k));
+            }
+          }
+          
+          if (k1Size > 0) {
+            descriptors1 = cv::Mat(k1Size, 48, CV_8U);
+            for (size_t k = 0; k < k1Size; ++k) {
+              const uchar* desc = multiFrame->keypointDescriptor(im1, k);
+              std::copy(desc, desc + 48, descriptors1.ptr<uchar>(k));
+            }
+          }
+        }
+
+        // Use LightGlue or BRISK matching
+        std::vector<std::pair<size_t, size_t>> frame_matches;
+
+        if (use_lightglue) {
+          // Use LightGlue matching
+#ifdef OKVIS_USE_LIGHTGLUE
+          // Get image sizes for keypoint normalization
+          cv::Size image0_size(static_cast<int>(camera0->imageWidth()), 
+                               static_cast<int>(camera0->imageHeight()));
+          cv::Size image1_size(static_cast<int>(camera1->imageWidth()), 
+                               static_cast<int>(camera1->imageHeight()));
+          
+          std::vector<LightGlueMatcher::Match> lg_matches;
+          if (lightglue_matcher_->match(keypoints0, descriptors0, keypoints1, descriptors1, 
+                                        image0_size, image1_size, lg_matches)) {
+            // Convert LightGlue matches to frame_matches format
+            for (const auto& m : lg_matches) {
+              // Apply confidence threshold
+              if (m.confidence >= params.frontend.lightglue_match_threshold) {
+                frame_matches.push_back(std::make_pair(m.query_idx, m.train_idx));
+              }
+            }
+            
+            // Process LightGlue matches similar to BRISK matches
+            for (const auto& match_pair : frame_matches) {
+              size_t k0 = match_pair.first;
+              size_t k1 = match_pair.second;
+              
+              if (k0 >= k0Size || k1 >= k1Size) continue;
+              
+              double size0, size1;
+              multiFrame->getKeypointSize(im0, k0, size0);
+              multiFrame->getKeypointSize(im1, k1, size1);
+              Eigen::Vector2d pt0, pt1;
+              multiFrame->getKeypoint(im0, k0, pt0);
+              multiFrame->getKeypoint(im1, k1, pt1);
+              const double sigma = std::max(size0/f0, size1/f1) * 0.125;
+
+              // triangulate
+              bool isValid = false;
+              bool isParallel = false;
+              Eigen::Vector3d e0_C, e1_C;
+              if(!multiFrame->getBackProjection(im0, k0, e0_C)) continue;
+              if(!multiFrame->getBackProjection(im1, k1, e1_C)) continue;
+              Eigen::Vector3d e0_W = (T_WC0.C()*e0_C).normalized();
+              Eigen::Vector3d e1_W = (T_WC1.C()*e1_C).normalized();
+              Eigen::Vector4d hp_W = triangulation::triangulateFast(
+                    T_WC0.r(), e0_W, T_WC1.r(), e1_W, sigma, isValid, isParallel);
+
+              // check if too close
+              const Eigen::Vector4d hp_C0 = (T_WC0.inverse()*hp_W);
+              const Eigen::Vector4d hp_C1 = (T_WC1.inverse()*hp_W);
+              if(!isParallel) {
+                hp_W = hp_W/hp_W[3];
+
+                if(hp_C0[2]/hp_C0[3] < 0.05) {
+                  isValid = false;
+                }
+                if(hp_C1[2]/hp_C1[3] <  0.05) {
+                  isValid = false;
+                }
+
+                if(e0_W.transpose()*e1_W < 0.8) {
+                  isValid = false;
+                }
+              }
+
+              // add observations and initialise
+              if(isValid) {
+                bool initialisable = !isParallel;
+                uint64_t lmId = 0;
+                const uint64_t id0 = multiFrame->landmarkId(im0, k0);
+                const uint64_t id1 = multiFrame->landmarkId(im1, k1);
+                bool add0 = false;
+                bool add1 = false;
+                if(id0 && id1) {
+                  if(!estimator.isLandmarkInitialised(LandmarkId(id0))) {
+                    if(initialisable) {
+                      estimator.setLandmark(LandmarkId(id0), hp_W, true);
+                    }
+                  }
+                } else if(id1) {
+                  lmId = id1;
+                  add0 = true;
+                } else if(id0) {
+                  lmId = id0;
+                  add1 = true;
+                } else {
+                  if(!asKeyframe){
+                    continue;
+                  }
+                  add0 = true;
+                  add1 = true;
+                  lmId = estimator.addLandmark(hp_W, initialisable).value();
+                }
+                
+                if(add0) {
+                  Eigen::Vector2d pt0p;
+                  MapPoint2 mapPoint;
+                  estimator.getLandmark(LandmarkId(lmId), mapPoint);
+                  Eigen::Vector4d hp_eff_W = mapPoint.point;
+                  auto s0 = camera0->projectHomogeneous(T_WC0.inverse()*hp_eff_W, &pt0p);
+                  if(s0 == cameras::ProjectionStatus::Successful && (pt0-pt0p).norm()<4.0) {
+                    multiFrame->setLandmarkId(im0, k0, lmId);
+                    estimator.addObservation<CAMERA_GEOMETRY>(LandmarkId(lmId), StateId(mfId), im0, k0);
+                  }
+                }
+                if(add1) {
+                  Eigen::Vector2d pt1p;
+                  MapPoint2 mapPoint;
+                  estimator.getLandmark(LandmarkId(lmId), mapPoint);
+                  Eigen::Vector4d hp_eff_W = mapPoint.point;
+                  auto s1 = camera1->projectHomogeneous(T_WC1.inverse()*hp_eff_W, &pt1p);
+                  if(s1 == cameras::ProjectionStatus::Successful && (pt1-pt1p).norm()<4.0) {
+                    multiFrame->setLandmarkId(im1, k1, lmId);
+                    estimator.addObservation<CAMERA_GEOMETRY>(
+                      LandmarkId(lmId), StateId(mfId), im1, k1);
+                  }
+                }
+              }
+            }
+          } else {
+            LOG(WARNING) << "LightGlue matching failed, falling back to BRISK";
+            use_lightglue = false; // Fallback to BRISK
+          }
+#endif
+        }
+        
+        if (!use_lightglue) {
+          // Use BRISK matching (original logic)
+          for(size_t k0 = 0; k0 < k0Size; ++k0) {
           double distances = briskMatchingThreshold_;
-          bool initialisable=  false;
+            bool initialisable = false;
           Eigen::Vector4d hps_W;
           size_t k1_match = 0;
 
@@ -2136,6 +2383,7 @@ void Frontend::matchStereo(Estimator &estimator, std::shared_ptr<okvis::MultiFra
                 multiFrame->setLandmarkId(im1, k1_match, lmId);
                 estimator.addObservation<CAMERA_GEOMETRY>(
                   LandmarkId(lmId), StateId(mfId), im1, k1_match);
+                }
               }
             }
           }
@@ -2414,6 +2662,157 @@ void Frontend::initialiseBriskFeatureDetectors() {
   for (auto it = featureDetectorMutexes_.begin(); it != featureDetectorMutexes_.end(); ++it) {
     (*it)->unlock();
   }
+}
+
+bool Frontend::initializeSuperPointLightGlue(const okvis::ViParameters& params) {
+  params_ptr_ = const_cast<okvis::ViParameters*>(&params);
+  
+#ifdef OKVIS_USE_SUPERPOINT
+  if (params.frontend.use_superpoint) {
+    // SuperVINS style: use extractor_weight_path, fallback to superpoint_model_path (legacy)
+    std::string extractor_path = params.frontend.extractor_weight_path;
+    if (extractor_path.empty()) {
+      extractor_path = params.frontend.superpoint_model_path;
+    }
+    
+    if (extractor_path.empty()) {
+      LOG(ERROR) << "SuperPoint enabled but model path not specified (extractor_weight_path or superpoint_model_path)";
+      return false;
+    }
+
+    superpoint_extractors_.clear();
+    superpoint_extractors_.resize(numCameras_);
+    
+    bool use_gpu = params.frontend.use_gpu_for_nn;
+#ifdef OKVIS_USE_GPU
+    if (!use_gpu) {
+      use_gpu = true; // Use GPU if available even if not explicitly set
+    }
+#endif
+
+    for (size_t i = 0; i < numCameras_; ++i) {
+      superpoint_extractors_[i] = std::make_shared<SuperPointExtractor>(
+          extractor_path,
+          params.frontend.superpoint_max_keypoints > 0 ? 
+              params.frontend.superpoint_max_keypoints : 2048,
+          params.frontend.superpoint_keypoint_threshold > 0.0f ? 
+              params.frontend.superpoint_keypoint_threshold : 0.015f,
+          use_gpu);
+      
+      if (!superpoint_extractors_[i]->isInitialized()) {
+        LOG(ERROR) << "Failed to initialize SuperPoint extractor for camera " << i 
+                   << " with model: " << extractor_path;
+        return false;
+      }
+    }
+    LOG(INFO) << "SuperPoint extractors initialized for " << numCameras_ << " cameras"
+              << " using model: " << extractor_path;
+  }
+#endif
+
+#ifdef OKVIS_USE_LIGHTGLUE
+  if (params.frontend.use_lightglue) {
+    // SuperVINS style: use matcher_weight_path, fallback to lightglue_model_path (legacy)
+    std::string matcher_path = params.frontend.matcher_weight_path;
+    if (matcher_path.empty()) {
+      matcher_path = params.frontend.lightglue_model_path;
+    }
+    
+    // If using fused model, matcher_path might be empty (use extractor_path)
+    if (matcher_path.empty() && params.frontend.use_fused_model) {
+      matcher_path = params.frontend.extractor_weight_path;
+      if (matcher_path.empty()) {
+        matcher_path = params.frontend.superpoint_model_path;
+      }
+    }
+    
+    if (matcher_path.empty()) {
+      LOG(ERROR) << "LightGlue enabled but model path not specified (matcher_weight_path or lightglue_model_path)";
+      return false;
+    }
+
+    bool use_gpu = params.frontend.use_gpu_for_nn;
+#ifdef OKVIS_USE_GPU
+    if (!use_gpu) {
+      use_gpu = true; // Use GPU if available even if not explicitly set
+    }
+#endif
+
+    // Determine extractor type (0=SUPERPOINT, 1=DISK, etc.)
+    int extractor_type = 0;  // Default to SuperPoint
+    if (params.frontend.use_superpoint) {
+      extractor_type = 0;  // SUPERPOINT
+    }
+    // Add other extractor types as needed
+    
+    lightglue_matcher_ = std::make_shared<LightGlueMatcher>(
+        matcher_path,
+        params.frontend.lightglue_match_threshold > 0.0f ? 
+            params.frontend.lightglue_match_threshold : 0.5f,  // SuperVINS default is 0.5
+        use_gpu,
+        extractor_type);
+    
+    if (!lightglue_matcher_->isInitialized()) {
+      LOG(ERROR) << "Failed to initialize LightGlue matcher with model: " << matcher_path;
+      return false;
+    }
+    LOG(INFO) << "LightGlue matcher initialized using model: " << matcher_path;
+  }
+#endif
+
+  return true;
+}
+
+bool Frontend::matchFrames(const std::vector<cv::KeyPoint>& keypoints0,
+                            const cv::Mat& descriptors0,
+                            const std::vector<cv::KeyPoint>& keypoints1,
+                            const cv::Mat& descriptors1,
+                            std::vector<std::pair<size_t, size_t>>& matches) {
+  matches.clear();
+
+#ifdef OKVIS_USE_LIGHTGLUE
+  if (params_ptr_ && params_ptr_->frontend.use_lightglue && 
+      lightglue_matcher_ && lightglue_matcher_->isInitialized()) {
+    
+    // Use LightGlue for matching
+    std::vector<Match> lightglue_matches;
+    if (lightglue_matcher_->match(keypoints0, descriptors0, keypoints1, descriptors1, lightglue_matches)) {
+      matches.reserve(lightglue_matches.size());
+      for (const auto& m : lightglue_matches) {
+        matches.push_back({static_cast<size_t>(m.query_idx), static_cast<size_t>(m.train_idx)});
+      }
+      return true;
+    } else {
+      LOG(WARNING) << "LightGlue matching failed, falling back to BRISK";
+      // Fallback to BRISK
+    }
+  }
+#endif
+
+  // Use BRISK matching (default or fallback)
+  matches.clear();
+  matches.reserve(std::min(keypoints0.size(), keypoints1.size()));
+  
+  for (size_t i = 0; i < keypoints0.size(); ++i) {
+    const uchar* desc0 = descriptors0.ptr<uchar>(i);
+    uint32_t distMin = briskMatchingThreshold_;
+    size_t bestMatch = keypoints1.size(); // Invalid index
+    
+    for (size_t j = 0; j < keypoints1.size(); ++j) {
+      const uchar* desc1 = descriptors1.ptr<uchar>(j);
+      const uint32_t dist = brisk::Hamming::PopcntofXORed(desc0, desc1, 3);
+      if (dist < distMin) {
+        distMin = dist;
+        bestMatch = j;
+      }
+    }
+    
+    if (bestMatch < keypoints1.size()) {
+      matches.push_back({i, bestMatch});
+    }
+  }
+  
+  return true;
 }
 
 }  // namespace okvis

@@ -245,6 +245,93 @@ void ViParametersReader::readConfigFile(const std::string& filename) {
   parseEntry(file["frontend_parameters"], "num_matching_threads",
              viParameters_.frontend.num_matching_threads);
 
+  // SuperPoint & LightGlue parameters (optional, default to false)
+  if (file["frontend_parameters"]["use_superpoint"].isInt() || file["frontend_parameters"]["use_superpoint"].isString()) {
+    parseEntry(file["frontend_parameters"], "use_superpoint",
+               viParameters_.frontend.use_superpoint);
+  } else {
+    viParameters_.frontend.use_superpoint = false;
+  }
+  
+  if (file["frontend_parameters"]["use_lightglue"].isInt() || file["frontend_parameters"]["use_lightglue"].isString()) {
+    parseEntry(file["frontend_parameters"], "use_lightglue",
+               viParameters_.frontend.use_lightglue);
+  } else {
+    viParameters_.frontend.use_lightglue = false;
+  }
+  
+  // Optional GPU parameter (default to false)
+  if (file["frontend_parameters"]["use_gpu_for_nn"].isInt() || file["frontend_parameters"]["use_gpu_for_nn"].isString()) {
+    parseEntry(file["frontend_parameters"], "use_gpu_for_nn",
+               viParameters_.frontend.use_gpu_for_nn);
+  } else {
+    viParameters_.frontend.use_gpu_for_nn = false;
+  }
+  
+  // SuperVINS style model paths (extractor_weight_path, matcher_weight_path)
+  if (file["frontend_parameters"]["extractor_weight_path"].isString()) {
+    file["frontend_parameters"]["extractor_weight_path"] >> viParameters_.frontend.extractor_weight_path;
+  } else {
+    viParameters_.frontend.extractor_weight_path = "";
+  }
+  
+  if (file["frontend_parameters"]["matcher_weight_path"].isString()) {
+    file["frontend_parameters"]["matcher_weight_path"] >> viParameters_.frontend.matcher_weight_path;
+  } else {
+    viParameters_.frontend.matcher_weight_path = "";
+  }
+  
+  // Legacy model paths (for backward compatibility)
+  if (file["frontend_parameters"]["superpoint_model_path"].isString()) {
+    file["frontend_parameters"]["superpoint_model_path"] >> viParameters_.frontend.superpoint_model_path;
+    // If extractor_weight_path is empty, use legacy path
+    if (viParameters_.frontend.extractor_weight_path.empty()) {
+      viParameters_.frontend.extractor_weight_path = viParameters_.frontend.superpoint_model_path;
+    }
+  } else {
+    viParameters_.frontend.superpoint_model_path = "";
+  }
+  
+  if (file["frontend_parameters"]["lightglue_model_path"].isString()) {
+    file["frontend_parameters"]["lightglue_model_path"] >> viParameters_.frontend.lightglue_model_path;
+    // If matcher_weight_path is empty, use legacy path
+    if (viParameters_.frontend.matcher_weight_path.empty()) {
+      viParameters_.frontend.matcher_weight_path = viParameters_.frontend.lightglue_model_path;
+    }
+  } else {
+    viParameters_.frontend.lightglue_model_path = "";
+  }
+  
+  // Fused model support
+  if (file["frontend_parameters"]["use_fused_model"].isInt() || file["frontend_parameters"]["use_fused_model"].isString()) {
+    parseEntry(file["frontend_parameters"], "use_fused_model",
+               viParameters_.frontend.use_fused_model);
+  } else {
+    // Auto-detect: if extractor_weight_path contains "fused", assume fused model
+    viParameters_.frontend.use_fused_model = 
+        (!viParameters_.frontend.extractor_weight_path.empty() && 
+         viParameters_.frontend.extractor_weight_path.find("fused") != std::string::npos);
+  }
+  
+  // Optional float parameters (with defaults)
+  if (file["frontend_parameters"]["superpoint_keypoint_threshold"].isReal()) {
+    file["frontend_parameters"]["superpoint_keypoint_threshold"] >> viParameters_.frontend.superpoint_keypoint_threshold;
+  } else {
+    viParameters_.frontend.superpoint_keypoint_threshold = 0.015f;
+  }
+  
+  if (file["frontend_parameters"]["superpoint_max_keypoints"].isInt()) {
+    file["frontend_parameters"]["superpoint_max_keypoints"] >> viParameters_.frontend.superpoint_max_keypoints;
+  } else {
+    viParameters_.frontend.superpoint_max_keypoints = 2048;
+  }
+  
+  if (file["frontend_parameters"]["lightglue_match_threshold"].isReal()) {
+    file["frontend_parameters"]["lightglue_match_threshold"] >> viParameters_.frontend.lightglue_match_threshold;
+  } else {
+    viParameters_.frontend.lightglue_match_threshold = 0.2f;
+  }
+
   // Parameters regarding the estimator.
   parseEntry(file["estimator_parameters"], "num_keyframes",
              viParameters_.estimator.num_keyframes);

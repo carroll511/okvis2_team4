@@ -40,6 +40,7 @@
 #include <execinfo.h>
 #include <Eigen/Core>
 #include <fstream>
+#include <cstdio>  // For std::remove
 
 #include <boost/filesystem.hpp>
 
@@ -89,12 +90,15 @@ int main(int argc, char **argv)
   node->declare_parameter("rgb", false);
   node->declare_parameter("config_filename", "");
   node->declare_parameter("path", "");
+  node->declare_parameter("output_path", "");  // Output directory for trajectory files (default: same as path, or /workspace/okvis2/output if path is read-only)
   node->declare_parameter("imu_propagated_state_publishing_rate", 0.0);
 
   node->get_parameter("rpg", rpg);
   node->get_parameter("rgb", rgb);
   node->get_parameter("config_filename", configFilename);
   node->get_parameter("path", path);
+  std::string outputPath("");
+  node->get_parameter("output_path", outputPath);
   if (configFilename.compare("")==0){
     LOG(ERROR) << "ros parameter 'config_filename' not set";
     return EXIT_FAILURE;
@@ -119,9 +123,14 @@ int main(int argc, char **argv)
     rosbag = true;
   }
   if(rosbag) {
+    // Get topic prefix from parameter (default: "/okvis")
+    std::string topicPrefix = "/okvis";
+    node->declare_parameter("topic_prefix", "/okvis");
+    node->get_parameter("topic_prefix", topicPrefix);
+    
     datasetReader.reset(new okvis::RosbagReader(
       path, int(parameters.nCameraSystem.numCameras()),
-      parameters.camera.sync_cameras, deltaT));
+      parameters.camera.sync_cameras, deltaT, topicPrefix));
   } else if(rpg) {
     datasetReader.reset(new okvis::RpgDatasetReader(
       path, deltaT, int(parameters.nCameraSystem.numCameras())));
@@ -152,10 +161,37 @@ int main(int argc, char **argv)
     mode = mode+"-calib";
   }
 
+  // Determine output path for trajectory files
+  // If output_path is not specified, try to use path, otherwise use default writable directory
+  std::string trajectoryPath = outputPath;
+  if (trajectoryPath.empty()) {
+    // Try to use path directory first
+    trajectoryPath = path;
+    
+    // Check if path is writable by trying to create a test file
+    std::string testFile = trajectoryPath + "/.okvis2_write_test";
+    std::ofstream testStream(testFile);
+    if (!testStream.good()) {
+      // Path is not writable (likely read-only mount), use default output directory
+      trajectoryPath = "/workspace/okvis2/output";
+      LOG(WARNING) << "Path directory is not writable, using default output directory: " << trajectoryPath;
+      
+      // Create output directory if it doesn't exist
+      boost::filesystem::create_directories(trajectoryPath);
+    } else {
+      // Path is writable, remove test file
+      testStream.close();
+      std::remove(testFile.c_str());
+    }
+  } else {
+    // Create output directory if it doesn't exist
+    boost::filesystem::create_directories(trajectoryPath);
+  }
+
   // setup publishing
-  publisher.setCsvFile(path + "/okvis2-" + mode + "-live_trajectory.csv", rpg);
-  estimator.setFinalTrajectoryCsvFile(path+"/okvis2-" + mode + "-final_trajectory.csv", rpg);
-  estimator.setMapCsvFile(path+"/okvis2-" + mode + "-final_map.csv");
+  publisher.setCsvFile(trajectoryPath + "/okvis2-" + mode + "-live_trajectory.csv", rpg);
+  estimator.setFinalTrajectoryCsvFile(trajectoryPath + "/okvis2-" + mode + "-final_trajectory.csv", rpg);
+  estimator.setMapCsvFile(trajectoryPath + "/okvis2-" + mode + "-final_map.csv");
   estimator.setOptimisedGraphCallback(
     std::bind(&okvis::Publisher::publishEstimatorUpdate, &publisher,
               std::placeholders::_1, std::placeholders::_2,

@@ -1,0 +1,31 @@
+# Docker Compose V2 format (version field is obsolete)
+
+services:
+  okvis2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: okvis2:latest
+    container_name: okvis2_container
+    runtime: nvidia  # For GPU support
+    environment:
+      - DISPLAY=${DISPLAY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - ..:/workspace/okvis2:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev:rw  # For RealSense camera access
+      - external_modules:/workspace/external_modules  # For FlowFormer/MAC-VO modules
+      - /home/junwan/1.Datasets/HILTI22':/workspace/datasets/HILTI22:ro  # Dataset mount (read-only)
+    network_mode: host  # For ROS2 communication
+    privileged: true  # Required for RealSense camera access
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+volumes:
+  external_modules:
+
