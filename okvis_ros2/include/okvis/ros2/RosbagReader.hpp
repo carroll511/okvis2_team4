@@ -124,6 +124,8 @@ private:
   std::set<size_t> syncCameras_; ///< Camera group to force synchronisation.
 
   Duration deltaT_ = okvis::Duration(0.0); ///< Skip duration [s].
+  
+  std::string topicPrefix_ = "/okvis"; ///< Topic name prefix (e.g., "/okvis" or "/alphasense").
 
 };
 

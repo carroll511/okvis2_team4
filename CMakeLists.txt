@@ -20,6 +20,10 @@ option (USE_NN
         "Use keypoint classification as part of okvis, requires torch" ON)
 option (USE_GPU
         "Use keypoint classification with GPU inference, requires torch with Cuda" OFF)
+option (USE_SUPERPOINT
+        "Use SuperPoint for feature extraction, requires ONNX Runtime" OFF)
+option (USE_LIGHTGLUE
+        "Use LightGlue for feature matching, requires ONNX Runtime" OFF)
 option (DO_TIMING
         "Enable timing" ON)
 option (BUILD_SHARED_LIBS
@@ -223,6 +227,7 @@ if(BUILD_ROS2)
   FIND_PACKAGE(image_transport REQUIRED)
   FIND_PACKAGE(message_filters REQUIRED)
   FIND_PACKAGE(cv_bridge REQUIRED)
+  FIND_PACKAGE(ament_index_cpp REQUIRED)
 
   # INCLUDES AND LIB DIRECTORIES
   INCLUDE_DIRECTORIES(${OpenCV_INCLUDE_DIRS})
@@ -271,6 +276,7 @@ if(BUILD_ROS2)
     ${LIB_NAME}
     PCL
     ament_cmake
+    ament_index_cpp
     rclcpp
     rclcpp_components
     rosbag2_cpp

@@ -131,7 +131,10 @@ bool RosbagReader::startStreaming() {
     if(info.topic_metadata.name.compare(imuTopic) == 0 || 
        info.topic_metadata.name.compare(imuTopicAlt) == 0) {
       numImuMeasurements = info.message_count;
+      LOG(INFO) << "    -> Matched IMU topic!";
     }
+    
+    // Check for camera topics
     for(int i=0; i<int(numCameras_); ++i) {
       std::string camTopic = topicPrefix_ + "/cam" + std::to_string(i) + "/image_raw";
       if(info.topic_metadata.name.compare(camTopic) == 0) {
@@ -139,6 +142,7 @@ bool RosbagReader::startStreaming() {
         if(i==0) {
           numImages_ =  numCamImages[i];
         }
+        LOG(INFO) << "    -> Matched camera " << i << " topic!";
       }
       std::string rgbTopic = topicPrefix_ + "/rgb" + std::to_string(i) + "/image_raw";
       if(info.topic_metadata.name.compare(rgbTopic) == 0) {
@@ -155,7 +159,9 @@ bool RosbagReader::startStreaming() {
   LOG(INFO)<< "No. IMU measurements: " << numImuMeasurements;
   if (numImuMeasurements <= 0) {
     LOG(ERROR)<< "no imu messages present in bag";
-    return -1;
+    LOG(ERROR)<< "Expected IMU topic: " << topicPrefix_ << "/imu0 or " << topicPrefix_ << "/imu";
+    LOG(ERROR)<< "Please check the topic_prefix parameter. For HILTI22 dataset, use: topic_prefix:=/alphasense";
+    return false;
   }
   for(int i=0; i<int(numCameras_); ++i) {
     LOG(INFO)<< "No. cam " << i << " RGB images: " << numRgbImages[i];

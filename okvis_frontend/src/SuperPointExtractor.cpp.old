@@ -1,0 +1,331 @@
+/*********************************************************************************
+ *  OKVIS - Open Keyframe-based Visual-Inertial SLAM
+ *  Copyright (c) 2015, Autonomous Systems Lab / ETH Zurich
+ *  Copyright (c) 2020, Smart Robotics Lab / Imperial College London
+ *  Copyright (c) 2024, Smart Robotics Lab / Technical University of Munich
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions are met:
+ *
+ *   * Redistributions of source code must retain the above copyright notice,
+ *     this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *   * Neither the name of Autonomous Systems Lab, ETH Zurich, Smart Robotics Lab,
+ *     Imperial College London, Technical University of Munich, nor the names of
+ *     its contributors may be used to endorse or promote products derived from
+ *     this software without specific prior written permission.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *     IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ *  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ *  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ *  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ *  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ *  POSSIBILITY OF SUCH DAMAGE.
+ *********************************************************************************/
+
+/**
+ * @file SuperPointExtractor.cpp
+ * @brief SuperPoint feature extractor implementation
+ */
+
+#include <okvis/SuperPointExtractor.hpp>
+#include <okvis/assert_macros.hpp>
+#include <glog/logging.h>
+#include <algorithm>
+#include <cmath>
+
+#ifdef OKVIS_USE_SUPERPOINT
+#include <onnxruntime_cxx_api.h>
+#endif
+
+namespace okvis {
+
+#ifdef OKVIS_USE_SUPERPOINT
+
+SuperPointExtractor::SuperPointExtractor(const std::string& model_path,
+                                         int max_keypoints,
+                                         float keypoint_threshold,
+                                         bool use_gpu)
+    : initialized_(false),
+      max_keypoints_(max_keypoints),
+      keypoint_threshold_(keypoint_threshold),
+      use_gpu_(use_gpu),
+      env_(ORT_LOGGING_LEVEL_WARNING, "SuperPoint") {
+  
+  try {
+    // Configure session options
+    if (use_gpu_) {
+      OrtCUDAProviderOptions cuda_options{};
+      cuda_options.device_id = 0;
+      session_options_.AppendExecutionProvider_CUDA(cuda_options);
+    }
+    session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    session_options_.SetIntraOpNumThreads(1);
+    session_options_.SetInterOpNumThreads(1);
+
+    // Create session
+    session_ = std::make_unique<Ort::Session>(env_, model_path.c_str(), session_options_);
+
+    // Get input/output names and shapes
+    Ort::AllocatorWithDefaultOptions allocator;
+    size_t num_input_nodes = session_->GetInputCount();
+    size_t num_output_nodes = session_->GetOutputCount();
+
+    if (num_input_nodes != 1 || num_output_nodes < 2) {
+      LOG(ERROR) << "SuperPoint model should have 1 input and at least 2 outputs";
+      return;
+    }
+
+    // Get input info
+    auto input_name = session_->GetInputNameAllocated(0, allocator);
+    input_names_.push_back(input_name.get());
+    auto input_type_info = session_->GetInputTypeInfo(0);
+    auto input_tensor_info = input_type_info.GetTensorTypeAndShapeInfo();
+    input_shape_ = input_tensor_info.GetShape();
+    
+    // Get output info
+    for (size_t i = 0; i < num_output_nodes; ++i) {
+      auto output_name = session_->GetOutputNameAllocated(i, allocator);
+      output_names_.push_back(output_name.get());
+      auto output_type_info = session_->GetOutputTypeInfo(i);
+      auto output_tensor_info = output_type_info.GetTensorTypeAndShapeInfo();
+      auto output_shape = output_tensor_info.GetShape();
+      
+      // Typically: outputs are [keypoints, descriptors, scores] or [scores, descriptors]
+      if (i == 0) {
+        keypoint_output_shape_ = output_shape;
+      } else if (i == 1) {
+        descriptor_output_shape_ = output_shape;
+      } else if (i == 2) {
+        score_output_shape_ = output_shape;
+      }
+    }
+
+    initialized_ = true;
+    LOG(INFO) << "SuperPoint extractor initialized from: " << model_path;
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "Failed to initialize SuperPoint extractor: " << e.what();
+    initialized_ = false;
+  }
+}
+
+SuperPointExtractor::~SuperPointExtractor() {
+  // ONNX Runtime handles cleanup automatically
+}
+
+bool SuperPointExtractor::extract(const cv::Mat& image,
+                                  std::vector<cv::KeyPoint>& keypoints,
+                                  cv::Mat& descriptors) {
+  if (!initialized_) {
+    LOG(ERROR) << "SuperPoint extractor not initialized";
+    return false;
+  }
+
+  if (image.empty()) {
+    LOG(ERROR) << "Input image is empty";
+    return false;
+  }
+
+  // Preprocess image
+  std::vector<float> input_tensor;
+  int height, width;
+  preprocessImage(image, input_tensor, height, width);
+
+  // Prepare input tensor
+  std::vector<int64_t> input_shape = {1, 1, height, width};
+  Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(
+      OrtArenaAllocator, OrtMemTypeDefault);
+  Ort::Value input_tensor_ort = Ort::Value::CreateTensor<float>(
+      memory_info, input_tensor.data(), input_tensor.size(),
+      input_shape.data(), input_shape.size());
+
+  // Run inference
+  try {
+    auto output_tensors = session_->Run(
+        Ort::RunOptions{nullptr},
+        input_names_.data(), &input_tensor_ort, 1,
+        output_names_.data(), output_names_.size());
+
+    // Extract outputs
+    // SuperPoint typically outputs: [scores, descriptors] or [keypoints, descriptors, scores]
+    // We need to handle different output formats
+    float* score_data = nullptr;
+    float* descriptor_data = nullptr;
+    float* keypoint_data = nullptr;
+
+    // Determine output format based on shape
+    for (size_t i = 0; i < output_tensors.size(); ++i) {
+      auto tensor_info = output_tensors[i].GetTensorTypeAndShapeInfo();
+      auto shape = tensor_info.GetShape();
+      float* data = output_tensors[i].GetTensorMutableData<float>();
+
+      // Scores: [1, H, W] or [1, 1, H, W]
+      if (shape.size() == 3 || (shape.size() == 4 && shape[1] == 1)) {
+        score_data = data;
+      }
+      // Descriptors: [1, 256, H, W] or [1, H, W, 256]
+      else if (shape.size() == 4 && (shape[1] == 256 || shape[3] == 256)) {
+        descriptor_data = data;
+      }
+      // Keypoints: [1, N, 2] (optional)
+      else if (shape.size() == 3 && shape[2] == 2) {
+        keypoint_data = data;
+      }
+    }
+
+    if (!score_data || !descriptor_data) {
+      LOG(ERROR) << "Failed to extract SuperPoint outputs";
+      return false;
+    }
+
+    // Postprocess
+    postprocessOutput(keypoint_data, score_data, descriptor_data,
+                     height, width, keypoints, descriptors);
+
+    return true;
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "SuperPoint inference failed: " << e.what();
+    return false;
+  }
+}
+
+void SuperPointExtractor::preprocessImage(const cv::Mat& image,
+                                          std::vector<float>& output,
+                                          int& height, int& width) {
+  // Convert to grayscale if needed
+  cv::Mat gray;
+  if (image.channels() == 3) {
+    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+  } else {
+    gray = image.clone();
+  }
+
+  // Resize to model input size (typically 480x640 or similar)
+  // SuperPoint works with fixed input size
+  const int model_height = 480;
+  const int model_width = 640;
+  
+  cv::Mat resized;
+  cv::resize(gray, resized, cv::Size(model_width, model_height));
+  height = model_height;
+  width = model_width;
+
+  // Normalize to [0, 1] and convert to float
+  output.resize(height * width);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      output[y * width + x] = resized.at<uchar>(y, x) / 255.0f;
+    }
+  }
+}
+
+void SuperPointExtractor::postprocessOutput(const float* keypoint_data,
+                                            const float* score_data,
+                                            const float* descriptor_data,
+                                            int height, int width,
+                                            std::vector<cv::KeyPoint>& keypoints,
+                                            cv::Mat& descriptors) {
+  keypoints.clear();
+
+  // Extract keypoints from score map
+  std::vector<std::pair<float, cv::Point2f>> candidates;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      float score = score_data[y * width + x];
+      if (score > keypoint_threshold_) {
+        candidates.push_back({score, cv::Point2f(x, y)});
+      }
+    }
+  }
+
+  // Sort by score and take top N
+  std::sort(candidates.begin(), candidates.end(),
+            [](const std::pair<float, cv::Point2f>& a,
+               const std::pair<float, cv::Point2f>& b) {
+              return a.first > b.first;
+            });
+
+  int num_keypoints = std::min(static_cast<int>(candidates.size()), max_keypoints_);
+  
+  // Extract descriptors for selected keypoints
+  // Descriptors are typically in shape [1, 256, H, W] or [1, H, W, 256]
+  bool is_chw = true; // Assume CHW format [1, 256, H, W]
+  
+  descriptors = cv::Mat(num_keypoints, 256, CV_32F);
+  
+  for (int i = 0; i < num_keypoints; ++i) {
+    int x = static_cast<int>(candidates[i].second.x);
+    int y = static_cast<int>(candidates[i].second.y);
+    
+    // Create keypoint
+    keypoints.push_back(cv::KeyPoint(candidates[i].second, 8.0f, -1, candidates[i].first));
+    
+    // Extract descriptor
+    float* desc_ptr = descriptors.ptr<float>(i);
+    if (is_chw) {
+      // CHW format: [1, 256, H, W]
+      for (int d = 0; d < 256; ++d) {
+        desc_ptr[d] = descriptor_data[d * height * width + y * width + x];
+      }
+    } else {
+      // HWC format: [1, H, W, 256]
+      for (int d = 0; d < 256; ++d) {
+        desc_ptr[d] = descriptor_data[y * width * 256 + x * 256 + d];
+      }
+    }
+    
+    // L2 normalize descriptor
+    float norm = 0.0f;
+    for (int d = 0; d < 256; ++d) {
+      norm += desc_ptr[d] * desc_ptr[d];
+    }
+    norm = std::sqrt(norm);
+    if (norm > 1e-6f) {
+      for (int d = 0; d < 256; ++d) {
+        desc_ptr[d] /= norm;
+      }
+    }
+  }
+}
+
+#else // OKVIS_USE_SUPERPOINT not defined
+
+SuperPointExtractor::SuperPointExtractor(const std::string& /*model_path*/,
+                                         int /*max_keypoints*/,
+                                         float /*keypoint_threshold*/,
+                                         bool /*use_gpu*/)
+    : initialized_(false), max_keypoints_(2048), keypoint_threshold_(0.015f), use_gpu_(false) {
+  LOG(WARNING) << "SuperPoint support not compiled. Rebuild with OKVIS_USE_SUPERPOINT=ON";
+}
+
+SuperPointExtractor::~SuperPointExtractor() {}
+
+bool SuperPointExtractor::extract(const cv::Mat& /*image*/,
+                                  std::vector<cv::KeyPoint>& /*keypoints*/,
+                                  cv::Mat& /*descriptors*/) {
+  LOG(ERROR) << "SuperPoint support not compiled";
+  return false;
+}
+
+void SuperPointExtractor::preprocessImage(const cv::Mat& /*image*/,
+                                          std::vector<float>& /*output*/,
+                                          int& /*height*/, int& /*width*/) {}
+
+void SuperPointExtractor::postprocessOutput(const float* /*keypoint_data*/,
+                                            const float* /*score_data*/,
+                                            const float* /*descriptor_data*/,
+                                            int /*height*/, int /*width*/,
+                                            std::vector<cv::KeyPoint>& /*keypoints*/,
+                                            cv::Mat& /*descriptors*/) {}
+
+#endif // OKVIS_USE_SUPERPOINT
+
+} // namespace okvis
+

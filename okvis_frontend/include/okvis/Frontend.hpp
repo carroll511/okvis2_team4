@@ -48,6 +48,12 @@
 #include <okvis/assert_macros.hpp>
 #include <okvis/timing/Timer.hpp>
 #include <thread>
+#ifdef OKVIS_USE_SUPERPOINT
+#include <okvis/SuperPointExtractor.hpp>
+#endif
+#ifdef OKVIS_USE_LIGHTGLUE
+#include <okvis/LightGlueMatcher.hpp>
+#endif
 
 /// \brief okvis Main namespace of this package.
 namespace okvis {
@@ -259,6 +265,13 @@ class Frontend : public ViFrontendInterface {
   /// \brief Clears and resets everything (so you can re-start).
   void clear();
 
+  /**
+   * @brief Initialize SuperPoint and LightGlue from parameters
+   * @param params VI parameters containing SuperPoint/LightGlue settings
+   * @return True if successful
+   */
+  bool initializeSuperPointLightGlue(const okvis::ViParameters& params);
+
 private:
 
   /**
@@ -280,6 +293,9 @@ private:
 
   bool isInitialized_;        ///< Is the pose initialised?
   const size_t numCameras_;   ///< Number of cameras in the configuration.
+  
+  /// \brief Frontend parameters (for SuperPoint/LightGlue initialization)
+  okvis::ViParameters* params_ptr_; ///< Pointer to parameters (set via initializeSuperPointLightGlue)
 
   /// @name BRISK detection parameters
   /// @{
@@ -371,6 +387,21 @@ private:
                             std::vector<std::pair<StateId, double>> &stateIds) const;
 
   /**
+   * @brief Match two frames using LightGlue (if enabled) or BRISK
+   * @param keypoints0 Keypoints from first frame
+   * @param descriptors0 Descriptors from first frame
+   * @param keypoints1 Keypoints from second frame
+   * @param descriptors1 Descriptors from second frame
+   * @param matches Output matches (pairs of indices)
+   * @return True if successful
+   */
+  bool matchFrames(const std::vector<cv::KeyPoint>& keypoints0,
+                   const cv::Mat& descriptors0,
+                   const std::vector<cv::KeyPoint>& keypoints1,
+                   const cv::Mat& descriptors1,
+                   std::vector<std::pair<size_t, size_t>>& matches);
+
+  /**
    * @brief Verifies a recognised place with 3D2D matching, ransac, and nonlinear pose refinement.
    * @param[in] estimator Estimator.
    * @param[in] params The VI parameters.
@@ -443,6 +474,23 @@ private:
   /// \brief Classification network for keypoints (if enabled).
   std::vector<std::shared_ptr<Network>> networks_;
 
+#ifdef OKVIS_USE_SUPERPOINT
+  /// \brief SuperPoint extractors (one per camera)
+  std::vector<std::shared_ptr<SuperPointExtractor>> superpoint_extractors_;
+  /// \brief Store float descriptors from SuperPoint (frameId -> [camera0, camera1, ...])
+  /// This is needed for LightGlue matching which requires float descriptors
+  std::map<uint64_t, std::vector<cv::Mat>> float_descriptors_;
+#endif
+
+#ifdef OKVIS_USE_LIGHTGLUE
+  /// \brief LightGlue matcher
+  std::shared_ptr<LightGlueMatcher> lightglue_matcher_;
+#endif
+
+  /// \brief DBoW for loop closure
+  /// https://en.cppreference.com/w/cpp/language/pimpl
+  class DBoW;
+  std::unique_ptr<DBoW> dBow_; ///< DBoW object (PIMPL).
   /**
    * @brief Match the frames to older, co-visible frames and triangulate.
    * @tparam CAMERA_GEOMETRY The camera geometry type to use.
@@ -460,13 +508,15 @@ private:
   struct LandmarkToMatch {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     Eigen::Vector3d p_W; ///< 3D point in World coordinates.
-    cv::Mat descriptors; ///< All its descriptors.
+    cv::Mat descriptors; ///< All its descriptors (48 bytes BRISK format).
+    cv::Mat float_descriptors; ///< Float descriptors for LightGlue (256 floats).
     std::vector<KeypointIdentifier> kids; ///< All its observations.
     Eigen::Matrix3Xd e_W; ///< All directions in W-coords of the observations.
     Eigen::Matrix3Xd r_W; ///< Image centres of all the observations (W-coords).
     bool is3d = false; ///< Determine whether treated as 3D initialised.
     Eigen::Vector2d projection; ///< 2D projection location in pixels.
     bool ignore = false; ///< Ignore if classified as sky / person.
+    bool has_float_descriptors = false; ///< Whether float descriptors are available.
   };
 
   /**
@@ -501,7 +551,8 @@ private:
       const MapPoints& pointMap, size_t im, const MultiFramePtr&  multiFrame,
       std::vector<double>& distances, std::vector<LandmarkId>& lmIds,
       AlignedVector<Eigen::Vector4d>& hps_W, std::vector<size_t>& ctrs,
-      std::vector<double>& reprErrs) const;
+      std::vector<double>& reprErrs,
+      const cv::Mat& currentFloatDescriptors = cv::Mat()) const;
 
   /**
    * @brief Parallelisable sub-part of matchToMap -- unitialised points.
@@ -533,7 +584,8 @@ private:
       size_t numKeypoints,
       const MapPoints& pointMap, size_t im, const MultiFramePtr&  multiFrame,
       std::vector<double>& distances, std::vector<LandmarkId>& lmIds,
-      AlignedVector<Eigen::Vector4d>& hps_W, std::vector<size_t>& ctrs) const;
+      AlignedVector<Eigen::Vector4d>& hps_W, std::vector<size_t>& ctrs,
+      const cv::Mat& currentFloatDescriptors = cv::Mat()) const;
 
   std::atomic_bool trackingLost_; ///< Is the tracking currently lost?
 

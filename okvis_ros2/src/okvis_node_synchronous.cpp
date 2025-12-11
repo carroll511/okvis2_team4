@@ -40,6 +40,7 @@
 #include <execinfo.h>
 #include <Eigen/Core>
 #include <fstream>
+#include <cstdio>  // For std::remove
 
 #include <boost/filesystem.hpp>
 
@@ -125,6 +126,11 @@ int main(int argc, char **argv)
     rosbag = true;
   }
   if(rosbag) {
+    // Get topic prefix from parameter (default: "/okvis")
+    std::string topicPrefix = "/okvis";
+    node->declare_parameter("topic_prefix", "/okvis");
+    node->get_parameter("topic_prefix", topicPrefix);
+    
     datasetReader.reset(new okvis::RosbagReader(
       path, int(parameters.nCameraSystem.numCameras()),
       parameters.camera.sync_cameras, deltaT, topicPrefix));

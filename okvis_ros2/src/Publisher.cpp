@@ -41,6 +41,7 @@
 #include <okvis/ros2/Publisher.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/static_transform_broadcaster.h>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include <okvis/FrameTypedefs.hpp>
 
@@ -75,8 +76,39 @@ void Publisher::setupNode(std::shared_ptr<rclcpp::Node> node)
   bool loaded_mesh;
   node_->declare_parameter("mesh_file", "");
   loaded_mesh = node_->get_parameter("mesh_file", mesh_file);
-  if (loaded_mesh) {
-    meshMsg_.mesh_resource = mesh_file;
+  if (loaded_mesh && !mesh_file.empty()) {
+    // Always resolve mesh path to package share directory to avoid hardcoded path issues
+    std::string corrected_mesh_file;
+    try {
+      std::string package_share_dir = ament_index_cpp::get_package_share_directory("okvis");
+      
+      // Extract mesh filename from parameter (e.g., "realsense.dae" from full path)
+      std::string mesh_filename = "realsense.dae";  // default
+      size_t last_slash = mesh_file.find_last_of("/");
+      if (last_slash != std::string::npos) {
+        mesh_filename = mesh_file.substr(last_slash + 1);
+      }
+      
+      // Always use package share directory to ensure correct path regardless of input
+      corrected_mesh_file = "file://" + package_share_dir + "/resources/meshes/" + mesh_filename;
+      
+      // Always log for debugging
+      LOG(INFO) << "Mesh file parameter: '" << mesh_file << "'";
+      LOG(INFO) << "Package share directory: '" << package_share_dir << "'";
+      LOG(INFO) << "Corrected mesh file path: '" << corrected_mesh_file << "'";
+      
+      if (mesh_file.find("/home/carroll/EE585/catkin_ws_okvis2") != std::string::npos) {
+        LOG(WARNING) << "Detected hardcoded path, correcting to: '" << corrected_mesh_file << "'";
+      }
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "Failed to get package share directory: " << e.what();
+      // Fallback: try to use original, but log warning
+      corrected_mesh_file = mesh_file;
+      LOG(WARNING) << "Using original mesh_file path (may contain hardcoded path): " << mesh_file;
+    }
+    
+    meshMsg_.mesh_resource = corrected_mesh_file;
+    LOG(INFO) << "Final mesh_resource set to: '" << meshMsg_.mesh_resource << "'";
 
     // fill orientation
     meshMsg_.pose.orientation.x = 0;

@@ -201,7 +201,7 @@ source /workspace/okvis2/build/install/share/okvis/local_setup.bash
 
 # Launch 파일 실행
 ros2 launch okvis okvis_node_synchronous.launch.xml \
-    config_filename:=/workspace/okvis2/config/euroc.yaml \
+    config_filename:=/workspace/okvis2/config/hilti_challenge_2022.yaml \
     path:=/workspace/datasets/HILTI22/path/to/bag/folder \
     topic_prefix:=/alphasense \
     output_path:=/workspace/okvis2/output  # Optional: trajectory 파일 출력 경로 (기본값: path 또는 /workspace/okvis2/output)

@@ -93,6 +93,11 @@ void ThreadedSlam::init()
   frontend_.setBriskDetectionMaximumKeypoints(size_t(parameters_.frontend.max_num_keypoints));
   frontend_.setKeyframeInsertionOverlapThreshold(float(parameters_.frontend.keyframe_overlap));
 
+  // Initialize SuperPoint and LightGlue if enabled
+  if (!frontend_.initializeSuperPointLightGlue(parameters_)) {
+    LOG(WARNING) << "Failed to initialize SuperPoint/LightGlue, continuing with BRISK";
+  }
+
   // setup estimator
   estimator_.addImu(parameters_.imu);
   for (size_t im = 0; im < numCameras; ++im) {
