@@ -40,8 +40,10 @@
 
 #include <okvis/kinematics/operators.hpp>
 #include <okvis/kinematics/Transformation.hpp>
+#include <okvis/timing/Timer.hpp>
 
 #include <okvis/ceres/ReprojectionError.hpp>
+#include <cmath>
 
 /// \brief okvis Main namespace of this package.
 namespace okvis {
@@ -52,6 +54,11 @@ namespace ceres {
 template<class GEOMETRY_T>
 ReprojectionError<GEOMETRY_T>::ReprojectionError()
     : cameraGeometry_(new camera_geometry_t) {
+  baseInformation_.setIdentity();
+  baseCovariance_.setIdentity();
+  information_ = baseInformation_;
+  covariance_ = baseCovariance_;
+  squareRootInformation_.setIdentity();
 }
 
 // Construct with measurement and information matrix.
@@ -69,9 +76,11 @@ ReprojectionError<GEOMETRY_T>::ReprojectionError(
 template<class GEOMETRY_T>
 void ReprojectionError<GEOMETRY_T>::setInformation(
     const covariance_t& information) {
-  information_ = information;
-  covariance_ = information.inverse();
-  // perform the Cholesky decomposition on order to obtain the correct error weighting
+  baseInformation_ = information;
+  baseCovariance_ = information.inverse();
+  information_ = baseInformation_;
+  covariance_ = baseCovariance_;
+  // perform the Cholesky decomposition of the base information (no adaptive scaling here)
   Eigen::LLT<Eigen::Matrix2d> lltOfInformation(information_);
   squareRootInformation_ = lltOfInformation.matrixL().transpose();
 }
@@ -131,15 +140,36 @@ bool ReprojectionError<GEOMETRY_T>::EvaluateWithMinimalJacobians(
   Eigen::Matrix<double, 2, 4> Jh_weighted;
   if (jacobians != nullptr) {
     cameraGeometry_->projectHomogeneous(hp_C, &kp, &Jh);
-    Jh_weighted = squareRootInformation_ * Jh;
   } else {
     cameraGeometry_->projectHomogeneous(hp_C, &kp);
   }
 
   measurement_t error = measurement_ - kp;
 
+  // adaptive weighting based on global residual variance (runs online)
+  const double residualNormSq = error.squaredNorm();
+  updateGlobalResidualStatistics(residualNormSq);
+
+  double adaptiveWeight = 1.0;
+  const double globalVar = globalResidualVariance();
+  if (std::isfinite(globalVar) && globalVar > 0.0) {
+    adaptiveWeight = 1.0 / (1e-6 + globalVar);
+  } else {
+    const double avgCov = baseCovariance_.trace() * 0.5;
+    adaptiveWeight = avgCov > 0.0 ? 1.0 / (1e-6 + avgCov) : 1.0;
+  }
+  okvis::timing::Timing::setDebugValue("8.2 image weight", adaptiveWeight);
+
+  Eigen::Matrix2d infoAdaptive = baseInformation_ * adaptiveWeight;
+  Eigen::LLT<Eigen::Matrix2d> llt(infoAdaptive);
+  Eigen::Matrix2d sqrtInfoAdaptive = llt.matrixL().transpose();
+
+  if (jacobians != nullptr) {
+    Jh_weighted = sqrtInfoAdaptive * Jh;
+  }
+
   // weight:
-  measurement_t weighted_error = squareRootInformation_ * error;
+  measurement_t weighted_error = sqrtInfoAdaptive * error;
 
   // assign:
   residuals[0] = weighted_error[0];

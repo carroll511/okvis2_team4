@@ -41,6 +41,8 @@
 
 #include <chrono>
 #include <mutex>
+#include <unordered_map>
+#include <vector>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -136,6 +138,10 @@ namespace timing {
     static  void reset(std::string const & tag);
     static  std::string print();
     static  std::string secondsToTimeString(double seconds);
+    // Debug helpers for scalar values that should appear in the timing report.
+    static void setDebugValue(const std::string & tag, double value);
+    static bool getDebugValue(const std::string & tag, double & value);
+    static void clearDebugValues();
     
   private:
     void addTime(size_t handle, double seconds);
@@ -155,6 +161,8 @@ namespace timing {
     list_t m_timers;
     map_t m_tagMap;
     size_t m_maxTagLength;
+    std::unordered_map<std::string, double> debugValues_;
+    std::mutex debugValuesMutex_;
     
   }; // end class timer
   

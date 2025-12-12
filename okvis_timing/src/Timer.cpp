@@ -37,6 +37,8 @@
  */
 
 #include <map>
+#include <unordered_map>
+#include <iomanip>
 #include <okvis/assert_macros.hpp>
 #include <okvis/timing/Timer.hpp>
 #include <stdio.h>
@@ -213,6 +215,26 @@ namespace timing {
     return reset(getHandle(tag));
   }
 
+  void Timing::setDebugValue(const std::string & tag, double value) {
+    std::lock_guard<std::mutex> lock(instance().debugValuesMutex_);
+    instance().debugValues_[tag] = value;
+  }
+
+  bool Timing::getDebugValue(const std::string & tag, double & value) {
+    std::lock_guard<std::mutex> lock(instance().debugValuesMutex_);
+    const auto it = instance().debugValues_.find(tag);
+    if (it == instance().debugValues_.end()) {
+      return false;
+    }
+    value = it->second;
+    return true;
+  }
+
+  void Timing::clearDebugValues() {
+    std::lock_guard<std::mutex> lock(instance().debugValuesMutex_);
+    instance().debugValues_.clear();
+  }
+
   std::string Timing::secondsToTimeString(double seconds) {
     
     double secs = fmod(seconds,60);
@@ -259,6 +281,25 @@ namespace timing {
         out << "[" << secondsToTimeString(minsec) << "," << secondsToTimeString(maxsec) << "]";
       }
       out << std::endl;
+    }
+
+    // print any debug scalar values, sorted by tag
+    std::unordered_map<std::string, double> debugValuesCopy;
+    {
+      std::lock_guard<std::mutex> lock(instance().debugValuesMutex_);
+      debugValuesCopy = instance().debugValues_;
+    }
+    if (!debugValuesCopy.empty()) {
+      out << "Debug values\n";
+      out << "------------\n";
+      std::map<std::string, double> orderedDebug(debugValuesCopy.begin(), debugValuesCopy.end());
+      for (const auto & entry : orderedDebug) {
+        out.width((std::streamsize)instance().m_maxTagLength);
+        out.setf(std::ios::left,std::ios::adjustfield);
+        out << entry.first << "\t";
+        out.setf(std::ios::right,std::ios::adjustfield);
+        out << std::setprecision(6) << entry.second << std::endl;
+      }
     }
   }
   std::string Timing::print()

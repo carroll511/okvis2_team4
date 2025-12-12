@@ -38,6 +38,7 @@
  */
 
 #include <glog/logging.h>
+#include <okvis/timing/Timer.hpp>
 
 #include <okvis/kinematics/operators.hpp>
 #include <okvis/ceres/ImuError.hpp>
@@ -113,6 +114,10 @@ int ImuError::append(const okvis::kinematics::Transformation& /*T_WS*/,
   // increments, cross matrix accumulation, sub-Jacobians,
   // the Jacobian of the increment (w/o biases): all left, not reset!
 
+  // accumulate jerk statistics to down-weight high-jerk segments
+  double jerkSquaredIntegral = 0.0;
+  double jerkTime = 0.0;
+
   bool hasStarted = false;
   int i = 0;
   for (okvis::ImuMeasurementDeque::const_iterator it = imuMeasurements.begin();
@@ -138,6 +143,12 @@ int ImuError::append(const okvis::kinematics::Transformation& /*T_WS*/,
       const double r = dt / interval;
       omega_S_1 = ((1.0 - r) * omega_S_0 + r * omega_S_1).eval();
       acc_S_1 = ((1.0 - r) * acc_S_0 + r * acc_S_1).eval();
+    }
+
+    if (dt > 1e-6) {
+      const Eigen::Vector3d jerk = (acc_S_1 - acc_S_0) / dt;
+      jerkSquaredIntegral += jerk.squaredNorm() * dt;
+      jerkTime += dt;
     }
 
     if (dt <= 0.0) {
@@ -271,6 +282,15 @@ int ImuError::append(const okvis::kinematics::Transformation& /*T_WS*/,
   PseudoInverse::symmSqrtU(P_delta_, squareRootInformation_);
   information_ = squareRootInformation_.transpose()*squareRootInformation_;
 
+  // down-weight IMU information when jerk is large (weight ~ inverse jerk)
+  if (jerkTime > 0.0) {
+    const double jerkRms = std::sqrt(jerkSquaredIntegral / jerkTime);
+    const double jerkScale = 1.0 / (1e-6 + jerkRms);
+    okvis::timing::Timing::setDebugValue("8.1 imu weight", jerkScale);
+    squareRootInformation_ *= std::sqrt(jerkScale);
+    information_ *= jerkScale;
+  }
+
   return i;
 }
 
@@ -316,6 +336,10 @@ int ImuError::redoPreintegration(const okvis::kinematics::Transformation& /*T_WS
     dPdsigma_.at(j).setZero();
   }
 
+  // accumulate jerk statistics to down-weight high-jerk segments
+  double jerkSquaredIntegral = 0.0;
+  double jerkTime = 0.0;
+
   bool hasStarted = false;
   int i = 0;
   for (okvis::ImuMeasurementDeque::const_iterator it = imuMeasurements_.begin();
@@ -341,6 +365,12 @@ int ImuError::redoPreintegration(const okvis::kinematics::Transformation& /*T_WS
       const double r = dt / interval;
       omega_S_1 = ((1.0 - r) * omega_S_0 + r * omega_S_1).eval();
       acc_S_1 = ((1.0 - r) * acc_S_0 + r * acc_S_1).eval();
+    }
+
+    if (dt > 1e-6) {
+      const Eigen::Vector3d jerk = (acc_S_1 - acc_S_0) / dt;
+      jerkSquaredIntegral += jerk.squaredNorm() * dt;
+      jerkTime += dt;
     }
 
     if (dt <= 0.0) {
@@ -481,6 +511,15 @@ int ImuError::redoPreintegration(const okvis::kinematics::Transformation& /*T_WS
   // calculate inverse and sqrt
   PseudoInverse::symmSqrtU(P_delta_, squareRootInformation_);
   information_ = squareRootInformation_.transpose()*squareRootInformation_;
+
+  // down-weight IMU information when jerk is large (weight ~ inverse jerk)
+  if (jerkTime > 0.0) {
+    const double jerkRms = std::sqrt(jerkSquaredIntegral / jerkTime);
+    const double jerkScale = 1.0 / (1e-6 + jerkRms);
+    okvis::timing::Timing::setDebugValue("8.1 imu weight", jerkScale);
+    squareRootInformation_ *= std::sqrt(jerkScale);
+    information_ *= jerkScale;
+  }
 
   return i;
 }

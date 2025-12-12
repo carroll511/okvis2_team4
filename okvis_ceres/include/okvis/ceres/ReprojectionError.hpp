@@ -40,6 +40,10 @@
 #define INCLUDE_OKVIS_CERES_REPROJECTIONERROR_HPP_
 
 #include <memory>
+#include <atomic>
+#include <limits>
+#include <cstdint>
+#include <cmath>
 
 #include <ceres/sized_cost_function.h>
 
@@ -50,6 +54,22 @@
 
 namespace okvis {
 namespace ceres {
+
+namespace detail {
+/// \brief Global storage for the current average visual residual variance (squared RMS).
+inline std::atomic<double>& globalVisualResidualVariance()
+{
+  static std::atomic<double> variance{std::numeric_limits<double>::quiet_NaN()};
+  return variance;
+}
+
+/// \brief Global storage for the count of residual samples.
+inline std::atomic<uint64_t>& globalVisualResidualCount()
+{
+  static std::atomic<uint64_t> count{0};
+  return count;
+}
+}  // namespace detail
 
 /// \brief The 2D keypoint reprojection error.
 /// \tparam GEOMETRY_TYPE The camera gemetry type.
@@ -102,6 +122,33 @@ class ReprojectionError : public ReprojectionError2dBase
       std::shared_ptr<const camera_geometry_t> cameraGeometry)
   {
     cameraGeometry_ = cameraGeometry;
+  }
+
+  /// \brief Update global visual residual statistics (running mean of squared residual norm).
+  static void updateGlobalResidualStatistics(double squaredResidualNorm)
+  {
+    if (!std::isfinite(squaredResidualNorm)) {
+      return;
+    }
+    auto& count = detail::globalVisualResidualCount();
+    auto& mean = detail::globalVisualResidualVariance();
+    uint64_t oldCount = count.load(std::memory_order_relaxed);
+    uint64_t newCount = oldCount + 1;
+    // online mean update
+    double oldMean = mean.load(std::memory_order_relaxed);
+    if (!std::isfinite(oldMean)) {
+      mean.store(squaredResidualNorm, std::memory_order_relaxed);
+    } else {
+      double newMean = oldMean + (squaredResidualNorm - oldMean) / double(newCount);
+      mean.store(newMean, std::memory_order_relaxed);
+    }
+    count.store(newCount, std::memory_order_relaxed);
+  }
+
+  /// \brief Retrieve the current global visual residual variance (squared RMS).
+  static double globalResidualVariance()
+  {
+    return detail::globalVisualResidualVariance().load(std::memory_order_relaxed);
   }
 
   /// \brief Set the information.
@@ -199,6 +246,8 @@ class ReprojectionError : public ReprojectionError2dBase
   std::shared_ptr<const camera_geometry_t> cameraGeometry_;
 
   // weighting related
+  covariance_t baseInformation_; ///< The 2x2 base information matrix (before adaptive scaling).
+  covariance_t baseCovariance_; ///< The 2x2 base covariance matrix.
   covariance_t information_; ///< The 2x2 information matrix.
   covariance_t squareRootInformation_; ///< The 2x2 square root information matrix.
   covariance_t covariance_; ///< The 2x2 covariance matrix.
