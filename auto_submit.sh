@@ -13,9 +13,9 @@ REPORT_PDF="/home/carroll/Downloads/EE585_HILTI_vfinal.pdf"
 CHALLENGE_YEAR="2022"
 
 # If you can log in via cookie, set HILTI_COOKIE="name=value; another=value"
-HILTI_COOKIE="${HILTI_COOKIE:-PHPSESSID=1a7b8fu3k4qov3lqkjvncl0s3tnp0cie}"
-HILTI_USER="${HILTI_USER:-carroll@kaist.ac.kr}"
-HILTI_PASS="${HILTI_PASS:-Tlswldb0830!}"
+HILTI_COOKIE="${HILTI_COOKIE:-PHPSESSID=}"
+HILTI_USER="${HILTI_USER:-}"
+HILTI_PASS="${HILTI_PASS:-}"
 HILTI_COOKIE_OUT="${HILTI_COOKIE_OUT:-}"
 
 SUBMISSION_ROOT="/home/carroll/EE585/tmp/hilti_submit"
