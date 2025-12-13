@@ -19,7 +19,7 @@ LIBTORCH_LIB="/home/carroll/EE585/catkin_ws_okvis2/libtorch/lib"
 # If you can log in via cookie, set HILTI_COOKIE="name=value; another=value"
 # Otherwise set HILTI_USER / HILTI_PASS and adjust selectors in submit_and_score().
 # Defaulting to provided PHPSESSID; override by exporting HILTI_COOKIE.
-HILTI_COOKIE="${HILTI_COOKIE:-PHPSESSID=tvh9vq87q37m5vn1nvf21mpqnbusb5p9}"
+HILTI_COOKIE="${HILTI_COOKIE:-PHPSESSID=}"
 HILTI_USER="${HILTI_USER:-}"
 HILTI_PASS="${HILTI_PASS:-}"
 
