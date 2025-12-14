@@ -66,6 +66,9 @@ class Frontend : public ViFrontendInterface {
   OKVIS_DEFINE_EXCEPTION(Exception, std::runtime_error)
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+  // Forward declaration for loop-closure backend.
+  class DBoW;
+
   /**
    * @brief Constructor.
    * @param numCameras Number of cameras in the sensor configuration.
@@ -370,11 +373,6 @@ private:
                    const okvis::ViParameters& params,
                    bool asKeyframe);
 
-  /// \brief DBoW for loop closure
-  /// https://en.cppreference.com/w/cpp/language/pimpl
-  class DBoW;
-  std::unique_ptr<DBoW> dBow_; ///< DBoW object (PIMPL).
-
   /**
    * @brief Get filtered DBoW query.
    * @param[in] dBow DBoW database to use.
@@ -487,9 +485,6 @@ private:
   std::shared_ptr<LightGlueMatcher> lightglue_matcher_;
 #endif
 
-  /// \brief DBoW for loop closure
-  /// https://en.cppreference.com/w/cpp/language/pimpl
-  class DBoW;
   std::unique_ptr<DBoW> dBow_; ///< DBoW object (PIMPL).
   /**
    * @brief Match the frames to older, co-visible frames and triangulate.
