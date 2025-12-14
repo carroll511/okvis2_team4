@@ -73,8 +73,9 @@ public:
   /// @param numCameras The total number of cameras.
   /// @param syncCameras Camera group to force synchronisation.
   /// @param deltaT Duration [s] to skip in the beginning.
+  /// @param topicPrefix Topic name prefix (e.g., "/okvis" or "/alphasense").
   RosbagReader(const std::string& path, size_t numCameras, const std::set<size_t> & syncCameras,
-                const Duration & deltaT = Duration(0.0));
+                const Duration & deltaT = Duration(0.0), const std::string& topicPrefix = "/okvis");
 
   /// @brief Destructor: stops streaming.
   virtual ~RosbagReader();
@@ -113,6 +114,7 @@ private:
   rosbag2_cpp::readers::SequentialReader reader_; ///< The ros2 bag reader.
 
   std::string path_; ///< Dataset path.
+  std::string topicPrefix_; ///< Topic name prefix.
 
   std::atomic_bool streaming_; ///< Are we streaming?
   std::atomic_int counter_; ///< Number of images read yet.

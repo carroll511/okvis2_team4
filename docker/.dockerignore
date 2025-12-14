@@ -1,0 +1,51 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# Git
+.git/
+.gitignore
+.gitmodules
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Documentation
+*.md
+!README.md
+doxygen.config
+doxygen-awesome*.css
+
+# Test files
+*.log
+*.txt
+!contributors.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+

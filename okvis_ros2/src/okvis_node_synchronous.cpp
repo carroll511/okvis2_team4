@@ -84,17 +84,23 @@ int main(int argc, char **argv)
   bool rosbag = false;
   std::string configFilename("");
   std::string path("");
+  std::string outputPath("");
+  std::string topicPrefix("/okvis");
 
   node->declare_parameter("rpg", false);
   node->declare_parameter("rgb", false);
   node->declare_parameter("config_filename", "");
   node->declare_parameter("path", "");
+  node->declare_parameter("output_path", "");
+  node->declare_parameter("topic_prefix", "/okvis");
   node->declare_parameter("imu_propagated_state_publishing_rate", 0.0);
 
   node->get_parameter("rpg", rpg);
   node->get_parameter("rgb", rgb);
   node->get_parameter("config_filename", configFilename);
   node->get_parameter("path", path);
+  node->get_parameter("output_path", outputPath);
+  node->get_parameter("topic_prefix", topicPrefix);
   if (configFilename.compare("")==0){
     LOG(ERROR) << "ros parameter 'config_filename' not set";
     return EXIT_FAILURE;
@@ -121,7 +127,7 @@ int main(int argc, char **argv)
   if(rosbag) {
     datasetReader.reset(new okvis::RosbagReader(
       path, int(parameters.nCameraSystem.numCameras()),
-      parameters.camera.sync_cameras, deltaT));
+      parameters.camera.sync_cameras, deltaT, topicPrefix));
   } else if(rpg) {
     datasetReader.reset(new okvis::RpgDatasetReader(
       path, deltaT, int(parameters.nCameraSystem.numCameras())));
@@ -152,10 +158,30 @@ int main(int argc, char **argv)
     mode = mode+"-calib";
   }
 
+  // Determine output directory
+  std::string outputDir = path;  // Default to path directory
+  if (!outputPath.empty()) {
+    outputDir = outputPath;  // Use output_path if specified
+  } else {
+    // Check if path directory is writable, if not use default output directory
+    boost::filesystem::path testFile(path + "/.okvis_write_test");
+    std::ofstream testStream(testFile.string());
+    if (!testStream.good()) {
+      outputDir = "/workspace/okvis2/output";
+      LOG(WARNING) << "Path directory is not writable, using default output directory: " << outputDir;
+    } else {
+      testStream.close();
+      boost::filesystem::remove(testFile);
+    }
+  }
+  
+  // Ensure output directory exists
+  boost::filesystem::create_directories(outputDir);
+
   // setup publishing
-  publisher.setCsvFile(path + "/okvis2-" + mode + "-live_trajectory.csv", rpg);
-  estimator.setFinalTrajectoryCsvFile(path+"/okvis2-" + mode + "-final_trajectory.csv", rpg);
-  estimator.setMapCsvFile(path+"/okvis2-" + mode + "-final_map.csv");
+  publisher.setCsvFile(outputDir + "/okvis2-" + mode + "-live_trajectory.csv", rpg);
+  estimator.setFinalTrajectoryCsvFile(outputDir+"/okvis2-" + mode + "-final_trajectory.csv", rpg);
+  estimator.setMapCsvFile(outputDir+"/okvis2-" + mode + "-final_map.csv");
   estimator.setOptimisedGraphCallback(
     std::bind(&okvis::Publisher::publishEstimatorUpdate, &publisher,
               std::placeholders::_1, std::placeholders::_2,

@@ -62,8 +62,9 @@
 namespace okvis {
 
 RosbagReader::RosbagReader(const std::string& path, size_t numCameras,
-                           const std::set<size_t> &syncCameras, const Duration & deltaT) :
-    numCameras_(numCameras), syncCameras_(syncCameras), deltaT_(deltaT) {
+                           const std::set<size_t> &syncCameras, const Duration & deltaT,
+                           const std::string& topicPrefix) :
+    numCameras_(numCameras), syncCameras_(syncCameras), deltaT_(deltaT), topicPrefix_(topicPrefix) {
   streaming_ = false;
   setDatasetPath(path);
   counter_ = 0;
@@ -120,21 +121,31 @@ bool RosbagReader::startStreaming() {
   std::vector<int> numRgbImages(numCameras_, 0);
   std::vector<int> numCamImages(numCameras_, 0);
   std::vector<int> numDepthImages(numCameras_, 0);
+  
+  // Build topic names with prefix
+  std::string imuTopic = topicPrefix_ + "/imu";
+  std::string imuTopicAlt = topicPrefix_ + "/imu0";  // Alternative format
+  
   for(const auto & info : metadata.topics_with_message_count) {
-    if(info.topic_metadata.name.compare("/okvis/imu0") == 0) {
+    // Check IMU topic (try both /imu and /imu0 formats)
+    if(info.topic_metadata.name.compare(imuTopic) == 0 || 
+       info.topic_metadata.name.compare(imuTopicAlt) == 0) {
       numImuMeasurements = info.message_count;
     }
     for(int i=0; i<int(numCameras_); ++i) {
-      if(info.topic_metadata.name.compare("/okvis/cam"+std::to_string(i)+"/image_raw") == 0) {
+      std::string camTopic = topicPrefix_ + "/cam" + std::to_string(i) + "/image_raw";
+      if(info.topic_metadata.name.compare(camTopic) == 0) {
         numCamImages[i] = info.message_count;
         if(i==0) {
           numImages_ =  numCamImages[i];
         }
       }
-      if(info.topic_metadata.name.compare("/okvis/rgb"+std::to_string(i)+"/image_raw") == 0) {
+      std::string rgbTopic = topicPrefix_ + "/rgb" + std::to_string(i) + "/image_raw";
+      if(info.topic_metadata.name.compare(rgbTopic) == 0) {
         numRgbImages[i] = info.message_count;
       }
-      if(info.topic_metadata.name.compare("/okvis/depth"+std::to_string(i)+"/image_raw") == 0) {
+      std::string depthTopic = topicPrefix_ + "/depth" + std::to_string(i) + "/image_raw";
+      if(info.topic_metadata.name.compare(depthTopic) == 0) {
         numRgbImages[i] = info.message_count;
       }
     }  
@@ -187,8 +198,10 @@ void  RosbagReader::processing() {
     rclcpp::SerializedMessage extracted_serialized_msg(*serialized_message->serialized_data);
     auto topic = serialized_message->topic_name;
     
-    // check if IMU
-    if (topic.find("/okvis/imu0") != std::string::npos) {
+    // check if IMU (try both /imu and /imu0 formats)
+    std::string imuTopic = topicPrefix_ + "/imu";
+    std::string imuTopicAlt = topicPrefix_ + "/imu0";
+    if (topic.find(imuTopic) != std::string::npos || topic.find(imuTopicAlt) != std::string::npos) {
       sensor_msgs::msg::Imu msg;
       rclcpp::Serialization<sensor_msgs::msg::Imu> serialization_info;
       serialization_info.deserialize_message(&extracted_serialized_msg, &msg);
@@ -208,7 +221,8 @@ void  RosbagReader::processing() {
     // check if image
     okvis::Time t_unsynced(0.0);
     for(int i=0; i<int(numCameras_); ++i) {
-      if (topic.find("/okvis/cam"+std::to_string(i)+"/image_raw") != std::string::npos) {
+      std::string camTopic = topicPrefix_ + "/cam" + std::to_string(i) + "/image_raw";
+      if (topic.find(camTopic) != std::string::npos) {
         sensor_msgs::msg::Image msg;
         rclcpp::Serialization<sensor_msgs::msg::Image> serialization_info;
         serialization_info.deserialize_message(&extracted_serialized_msg, &msg);
@@ -229,7 +243,8 @@ void  RosbagReader::processing() {
         }
         t_images[i] = time;
       }
-      if (topic.find("/okvis/depth"+std::to_string(i)+"/image_raw") != std::string::npos) {
+      std::string depthTopic = topicPrefix_ + "/depth" + std::to_string(i) + "/image_raw";
+      if (topic.find(depthTopic) != std::string::npos) {
         sensor_msgs::msg::Image msg;
         rclcpp::Serialization<sensor_msgs::msg::Image> serialization_info;
         serialization_info.deserialize_message(&extracted_serialized_msg, &msg);

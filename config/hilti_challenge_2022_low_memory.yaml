@@ -109,25 +109,25 @@ frontend_parameters:
     absolute_threshold: 20.0 # absolute Harris corner threshold (noise floor)
     matching_threshold: 60.0 # BRISK descriptor matching threshold
     octaves: 0 # number of octaves for detection. 0 means single-scale at highest resolution
-    max_num_keypoints: 700 # restrict to a maximum of this many keypoints per image (strongest ones)
+    max_num_keypoints: 500 # restrict to a maximum of this many keypoints per image (reduced from 700 to save memory)
     keyframe_overlap: 0.59 # minimum field-of-view overlap
     use_cnn: true # use the CNN (if available) to filter out dynamic content / sky
     parallelise_detection: true # Run parallel detect & describe.
     num_matching_threads: 4 # Parallelise matching with this number of threads.
 
-# estimator parameters
+# estimator parameters - MEMORY OPTIMIZED
 estimator_parameters:
-    num_keyframes: 5 # number of keyframes in optimisation window
-    num_loop_closure_frames: 5 # number of loop closure frames in optimisation window
-    num_imu_frames: 3 # number of frames linked by most recent nonlinear IMU error terms
-    do_loop_closures: true # whether to do VI-SLAM or VIO
-    do_final_ba: true # Whether to run a full final BA
+    num_keyframes: 3 # number of keyframes in optimisation window (reduced from 5 to save memory)
+    num_loop_closure_frames: 0 # number of loop closure frames (set to 0 since loop closures are disabled)
+    num_imu_frames: 2 # number of frames linked by most recent nonlinear IMU error terms (reduced from 3)
+    do_loop_closures: false # whether to do VI-SLAM or VIO (DISABLED to save memory - this is the main memory consumer)
+    do_final_ba: false # Whether to run a full final BA (DISABLED to save memory)
     enforce_realtime: false # whether to limit the time budget for optimisation 
     realtime_min_iterations: 3 # minimum number of iterations always performed
-    realtime_max_iterations: 10 # never do more than these, even if not converged
+    realtime_max_iterations: 8 # never do more than these (reduced from 10)
     realtime_time_limit: 0.035 # time budget for realtime optimisation [s]
     realtime_num_threads: 4 # number of threads for the realtime optimisation
-    full_graph_iterations: 15 # don't do more than these for the full (background) optimisation
+    full_graph_iterations: 10 # don't do more than these for the full (background) optimisation (reduced from 15)
     full_graph_num_threads: 2 # number of threads for the full (background) optimisation
     p_dbow: 0.4 # Match threshold for dBoW -- unfortunately this varies with setups.
     drift_percentage_heuristic: 1.35 # % allowed drift in loop closures rel. to dist. travelled.

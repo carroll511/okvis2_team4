@@ -71,17 +71,31 @@ int main(int argc, char **argv)
   FLAGS_stderrthreshold = 0;  // INFO: 0, WARNING: 1, ERROR: 2, FATAL: 3
   FLAGS_colorlogtostderr = 1;
 
-  if (argc != 3 && argc != 4) {
+  if (argc < 3 || argc > 5) {
     LOG(ERROR)<<
-    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [-rpg]/[-rgb]";
+    "Usage: ./" << argv[0] << " configuration-yaml-file dataset-folder [-rpg]/[-rgb] [output-path]";
     return EXIT_FAILURE;
   }
 
   okvis::Duration deltaT(0.0);
   bool rpg = false;
-  if (argc == 4) {
+  std::string outputPath("");
+  if (argc >= 4) {
     if(strcmp(argv[3], "-rpg")==0) {
       rpg = true;
+    } else if(strcmp(argv[3], "-rgb")==0) {
+      // rgb flag
+    } else {
+      // Assume it's output path
+      outputPath = std::string(argv[3]);
+    }
+  }
+  if (argc == 5) {
+    if(strcmp(argv[4], "-rpg")==0) {
+      rpg = true;
+    }
+    if(outputPath.empty()) {
+      outputPath = std::string(argv[4]);
     }
   }
 
@@ -126,13 +140,35 @@ int main(int argc, char **argv)
     mode = mode+"-calib";
   }
 
-  okvis::TrajectoryOutput writer(path+"/okvis2-" + mode + "_trajectory.csv", false);
+  // Determine output directory
+  std::string outputDir = path;  // Default to path directory
+  if (!outputPath.empty()) {
+    outputDir = outputPath;  // Use output_path if specified
+  } else {
+    // Check if path directory is writable, if not use default output directory
+    boost::filesystem::path testFile(path + "/.okvis_write_test");
+    std::ofstream testStream(testFile.string());
+    if (!testStream.good()) {
+      boost::filesystem::path executable(argv[0]);
+      boost::filesystem::path buildDir = executable.parent_path().parent_path();
+      outputDir = (buildDir / "output").string();
+      LOG(WARNING) << "Path directory is not writable, using default output directory: " << outputDir;
+    } else {
+      testStream.close();
+      boost::filesystem::remove(testFile);
+    }
+  }
+  
+  // Ensure output directory exists
+  boost::filesystem::create_directories(outputDir);
+
+  okvis::TrajectoryOutput writer(outputDir+"/okvis2-" + mode + "_trajectory.csv", false);
   estimator.setOptimisedGraphCallback(
         std::bind(&okvis::TrajectoryOutput::processState, &writer,
                   std::placeholders::_1, std::placeholders::_2, std::placeholders::_3,
                   std::placeholders::_4));
-  estimator.setFinalTrajectoryCsvFile(path+"/okvis2-" + mode + "-final_trajectory.csv");
-  estimator.setMapCsvFile(path+"/okvis2-" + mode + "-final_map.csv");
+  estimator.setFinalTrajectoryCsvFile(outputDir+"/okvis2-" + mode + "-final_trajectory.csv");
+  estimator.setMapCsvFile(outputDir+"/okvis2-" + mode + "-final_map.csv");
 
   // connect reader to estimator
   datasetReader->setImuCallback(

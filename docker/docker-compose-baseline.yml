@@ -1,0 +1,36 @@
+# Docker Compose V2 format for OKVIS2 Baseline
+# This file allows running the baseline okvis2 in a separate container
+# without interfering with the working container in okvis2_working
+
+services:
+  okvis2_baseline:
+    image: okvis2:latest  # Use existing image, no build needed
+    container_name: okvis2_baseline_container
+    runtime: nvidia  # For GPU support
+    environment:
+      - DISPLAY=${DISPLAY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - ..:/workspace/okvis2:rw  # Mount current okvis2 directory (baseline)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev:rw  # For RealSense camera access
+      - okvis2_baseline_external_modules:/workspace/external_modules  # Separate volume to avoid conflicts
+      - /home/junwan/1.Datasets/HILTI22':/workspace/datasets/HILTI22:ro  # Dataset mount (read-only)
+    network_mode: host  # For ROS2 communication
+    privileged: true  # Required for RealSense camera access
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+    # Note: network_mode: host와 deploy는 호환되지 않을 수 있습니다.
+    # 메모리 문제가 발생하면 아래 방법들을 시도하세요:
+    # 1. Docker 데몬의 메모리 제한 확인: docker info | grep -i memory
+    # 2. 시스템 메모리 확인: free -h
+    # 3. 스왑 공간 추가 (아래 참고)
+    # 4. docker run으로 직접 실행하여 --memory 옵션 사용
+
+volumes:
+  okvis2_baseline_external_modules:  # Separate volume to avoid conflicts with okvis2_working
+
