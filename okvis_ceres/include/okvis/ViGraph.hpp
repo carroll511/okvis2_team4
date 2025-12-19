@@ -74,6 +74,7 @@
 #include <okvis/ceres/RelativePoseError.hpp>
 #include <okvis/ceres/TwoPoseGraphError.hpp>
 #include <okvis/ceres/SpeedAndBiasError.hpp>
+#include <okvis/ceres/DepthError.hpp>
 #include <okvis/ceres/CeresIterationCallback.hpp>
 
 /// \brief okvis Main namespace of this package.
@@ -233,6 +234,59 @@ class ViGraph
    * @return True on success.
    */
   bool setLandmark(LandmarkId id, const Eigen::Vector4d & homogeneousPoint);
+  /**
+   * @brief Add a one-sided depth error (10cm minimum distance, 1 mm standard deviation).
+   * @param keypointId keypoint identifier to add to.
+   * @return True on success.
+   */
+  bool addOneSidedDepthError(KeypointIdentifier keypointId)
+  {
+    Observation &obs = observations_.at(keypointId);
+    if (obs.depthError.residualBlockId) {
+      return false;
+    }
+    State &state = states_.at(StateId(keypointId.frameId));
+    obs.depthError.errorTerm.reset(new ceres::OneSidedDepthError(0.1, 0.001));
+    obs.depthError.residualBlockId
+      = problem_->AddResidualBlock(obs.depthError.errorTerm.get(),
+                                   nullptr,
+                                   state.pose->parameters(),
+                                   landmarks_.at(obs.landmarkId).hPoint->parameters(),
+                                   state.extrinsics.at(keypointId.cameraIndex)->parameters());
+
+    // remember everywhere
+    landmarks_.at(obs.landmarkId).observations.at(keypointId) = obs;
+    state.observations.at(keypointId) = obs;
+
+    return true;
+  }
+
+  /**
+   * @brief Remove one-sided depth error.
+   * @param keypointId keypoint identifier to remove from.
+   * @return True on success.
+   */
+  bool removeOneSidedDepthError(KeypointIdentifier keypointId)
+  {
+    Observation &obs = observations_.at(keypointId);
+    if (!obs.depthError.residualBlockId) {
+      return false;
+    }
+    State &state = states_.at(StateId(keypointId.frameId));
+    problem_->RemoveResidualBlock(obs.depthError.residualBlockId);
+    obs.depthError.errorTerm.reset();
+    obs.depthError.residualBlockId = nullptr;
+
+    // remember everywhere
+    landmarks_.at(obs.landmarkId).observations.at(keypointId) = obs;
+    state.observations.at(keypointId) = obs;
+
+    return true;
+  }
+
+  /// \brief Helper function to check all observed landmarks are in front of respective cameras.
+  /// \return True If all observations are correctly of landmarks in front of respective cameras.
+  bool areLandmarksInFrontOfCameras() const;
 
   // add/remove observations
   /**
@@ -506,6 +560,7 @@ protected:
   /// \brief Helper struct for the reprojection error graph edges.
   struct Observation : public GraphEdge<ceres::ReprojectionError2dBase> {
     LandmarkId landmarkId; ///< Landmark ID.
+    GraphEdge<ceres::OneSidedDepthError> depthError; ///< Optionally a depth error.
   };
 
   /// \brief Helper struct for the IMU error graph edges.

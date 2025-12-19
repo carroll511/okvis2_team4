@@ -76,6 +76,12 @@ class ViSlamBackend //: public VioBackendInterface
    */
   virtual ~ViSlamBackend() {}
 
+  /// \brief Helper function to check all observed landmarks are in front of respective cameras.
+  /// \return True If all observations are correctly of landmarks in front of respective cameras.
+  bool areLandmarksInFrontOfCameras() const {
+    return realtimeGraph_.areLandmarksInFrontOfCameras();
+  }
+
   /// @name Sensor configuration related
   ///@{
   /**
@@ -484,10 +490,16 @@ class ViSlamBackend //: public VioBackendInterface
   /// \return The number of landmarks removed.
   int cleanUnobservedLandmarks();
 
+  /// \brief Merge landmark with two IDs into one, taking care of all the observations.
+  /// \param fromId Landmark from ID (will be deleted).
+  /// \param intoId Landmark to ID (will be kept).
+  /// \return True on success.
+  bool mergeLandmark(const LandmarkId &fromId, const LandmarkId &intoId);
+
   /// \brief Merge landmarks with two IDs into one, taking care of all the observations.
   /// \param fromIds Landmarks from ID (will be deleted).
   /// \param intoIds Landmarks to ID (will be kept).
-  /// \return True on success.
+  /// \return Number of successful merges.
   int mergeLandmarks(std::vector<LandmarkId> fromIds, std::vector<LandmarkId> intoIds);
 
   /// \brief Write the full optimised trajectory into a file.
@@ -502,11 +514,13 @@ class ViSlamBackend //: public VioBackendInterface
   /// \param T_Si_Sj The relative pose between the IMU frames S.
   /// \param information The relative pose information.
   /// \param skipFullGraphOptimisation Whether to not subsequently optimise the full graph.
+  /// \param driftPercentageHeuristic Allowed drift in % of distance travelled.
   /// \return True on success.
   bool attemptLoopClosure(StateId pose_i, StateId pose_j,
                           const kinematics::Transformation& T_Si_Sj,
                           const Eigen::Matrix<double, 6, 6>& information,
-                          bool & skipFullGraphOptimisation);
+                          bool & skipFullGraphOptimisation,
+                          double driftPercentageHeuristic);
 
   /// \brief Add a loopclosure frame (after successful attempt).
   /// \brief loopClosureFrameId The ID of the frame to be added.

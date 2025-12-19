@@ -89,6 +89,8 @@ struct CameraParameters{
     bool do_extrinsics_final_ba; ///< Do we calibrate extrinsics in final BA?
     double sigma_r; ///< T_SCi position prior stdev [m]
     double sigma_alpha; ///< T_SCi orientation prior stdev [rad]
+    double sigma_r_final_ba; ///< T_SCi position prior stdev in final BA [m]
+    double sigma_alpha_final_ba; ///< T_SCi orientation prior stdev in final BA [rad]
   };
 
   OnlineCalibrationParameters online_calibration; ///< Online calibration parameters.
@@ -148,6 +150,8 @@ struct EstimatorParameters {
   int realtime_num_threads; ///< Number of threads for the realtime optimisation.
   int full_graph_iterations; ///< Don't do more than these for the full (background) optimisation.
   int full_graph_num_threads; ///< Number of threads for the full (background) optimisation.
+  double p_dbow; ///< Match threshold for dBoW -- unfortunately this varies with setups.
+  double drift_percentage_heuristic; ///< % allowed drift in loop closures rel. to dist. travelled.
 };
 
 /**

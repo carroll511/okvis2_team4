@@ -141,10 +141,14 @@ bool ThreadedSlam::addImages(const okvis::Time & stamp,
                              const std::map<size_t, cv::Mat> & images,
                              const std::map<size_t, cv::Mat> & depthImages)
 {
+  // remove image delay:
+  // timestamp_camera_correct = timestamp_camera - image_delay
+  const Time stampCorrected = stamp - Duration(parameters_.camera.image_delay);
+
   // assemble frame
   const size_t numCameras = parameters_.nCameraSystem.numCameras();
   std::vector<okvis::CameraMeasurement> frames(numCameras);
-  frames.at(0).timeStamp = stamp; // slight hack -- always have the timestamp here.
+  frames.at(0).timeStamp = stampCorrected; // slight hack -- always have the timestamp here.
 
   bool useFrame = false;
   for(const auto & image : images) {
@@ -155,7 +159,7 @@ bool ThreadedSlam::addImages(const okvis::Time & stamp,
       } else {
         cv::cvtColor(image.second, frames.at(image.first).measurement.image, cv::COLOR_BGR2GRAY);
       }
-      frames.at(image.first).timeStamp = stamp;
+      frames.at(image.first).timeStamp = stampCorrected;
       frames.at(image.first).sensorId = image.first;
       frames.at(image.first).measurement.deliversKeypoints = false;
       useFrame = true;
@@ -165,7 +169,7 @@ bool ThreadedSlam::addImages(const okvis::Time & stamp,
   for(const auto & depthImage : depthImages) {
     if(parameters_.nCameraSystem.cameraType(depthImage.first).isUsed) {
       frames.at(depthImage.first).measurement.depthImage = depthImage.second;
-      frames.at(depthImage.first).timeStamp = stamp;
+      frames.at(depthImage.first).timeStamp = stampCorrected;
       frames.at(depthImage.first).sensorId = depthImage.first;
       frames.at(depthImage.first).measurement.deliversKeypoints = false;
     }
@@ -352,7 +356,6 @@ bool ThreadedSlam::processFrame() {
       kinematics::Transformation T_WC;
       T_WC.set(T_WC.r(), T_WC.q() * Eigen::Quaterniond(-sqrt(2), sqrt(2), 0, 0));
       T_WS = T_WC * parameters_.nCameraSystem.T_SC(0)->inverse();
-      //LOG(WARNING) << std::endl << T_WC.C();
     }
 
     // detection -- needed to check if we can start up
@@ -402,11 +405,11 @@ bool ThreadedSlam::processFrame() {
       speedAndBias.segment<3>(3) = lastOptimisedState_.b_g;
       speedAndBias.tail<3>() = lastOptimisedState_.b_a;
       ceres::ImuError::propagation(imuMeasurementDeque_,
-                                   parameters_.imu,
-                                   T_WS,
-                                   speedAndBias,
-                                   lastOptimisedState_.timestamp,
-                                   multiFrame->timestamp());
+                                           parameters_.imu,
+                                           T_WS,
+                                           speedAndBias,
+                                           lastOptimisedState_.timestamp,
+                                           multiFrame->timestamp());
     } else {
       T_WS = lastOptimisedState_.T_WS;
       if (preLastOptimisedState_.id.isInitialised()) {
@@ -417,8 +420,6 @@ bool ThreadedSlam::processFrame() {
         Eigen::AngleAxisd daa(T_WS.q() * T_WS_m1.q().inverse());
         daa.angle() *= r;
         T_WS.set(T_WS.r() + dr, T_WS.q() * Eigen::Quaterniond(daa));
-        //LOG(WARNING) << "---\n" << T_WS_m1.T() << "\n" << T_WS.T() << "\n===";
-        //LOG(WARNING) << dr.norm() << " : " << 2.0 * acos(dq.w());
       }
     }
   }
@@ -614,7 +615,6 @@ void ThreadedSlam::optimisePublishMarginalise(MultiFramePtr multiFrame,
     AlignedMap<uint64_t, kinematics::Transformation> T_AiS = estimator_.T_AiS_.at(id);
     for (const auto &T_AS : T_AiS) {
       T_AiW[T_AS.first] = T_AS.second * T_WS.inverse();
-      // std::cout << "@@@@ T_WAi= \n" << T_AiW.at(T_AS.first).inverse().T() << std::endl;
     }
   }
   state.T_AiW = T_AiW;
@@ -1045,10 +1045,10 @@ void ThreadedSlam::doFinalBa()
   const bool do_extrinsics_final_ba =
       parameters_.camera.online_calibration.do_extrinsics_final_ba;
   const double sigma_r = do_extrinsics_final_ba ?
-                         parameters_.camera.online_calibration.sigma_r :
+                         parameters_.camera.online_calibration.sigma_r_final_ba :
                          0.0;
   const double sigma_alpha = do_extrinsics_final_ba ?
-                             parameters_.camera.online_calibration.sigma_alpha :
+                             parameters_.camera.online_calibration.sigma_alpha_final_ba :
                              0.0;
   std::set<StateId> updatedStatesBa;
   estimator_.doFinalBa(100, posegraphOptimisationSummary_, updatedStatesBa,

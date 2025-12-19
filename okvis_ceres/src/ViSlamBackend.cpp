@@ -46,6 +46,7 @@
 #include <opencv2/imgcodecs/imgcodecs.hpp>
 
 #include <okvis/ViSlamBackend.hpp>
+#include <okvis/PseudoInverse.hpp>
 #include <okvis/Component.hpp>
 #include <okvis/timing/Timer.hpp>
 
@@ -548,9 +549,16 @@ bool ViSlamBackend::applyStrategy(size_t numKeyframes,
         }
         continue;
       }
-      if(convertToPosegraphFrames.size() > 0) {
+      if (convertToPosegraphFrames.size() > 0) {
         bool success = convertToPoseGraphMst(convertToPosegraphFrames, framesToConsider,
                                              affectedFrames);
+
+        // also free image memory now
+        for (auto id : convertToPosegraphFrames) {
+          multiFrames_.at(id)->clearAllImages();
+          multiFrames_.at(id)->clearAllDepthImages();
+        }
+
         ctrPg++;
         OKVIS_ASSERT_TRUE(Exception, realtimeGraph_.states_.at(minId).observations.size()==0,
                           "observations at ID " << minId.value() << " , success=" << int(success))
@@ -701,11 +709,6 @@ bool ViSlamBackend::applyStrategy(size_t numKeyframes,
     t6.stop();
   }
 
-  // prune superfluous keyframes for future place recognition
-  TimerSwitchable t7("7.7 prune place recognition frames");
-  prunePlaceRecognitionFrames();
-  t7.stop();
-
   return true;
 }
 
@@ -713,6 +716,8 @@ void ViSlamBackend::optimiseRealtimeGraph(
   int numIter, std::vector<StateId> & updatedStates, int numThreads, bool verbose,
   bool onlyNewestState, bool isInitialised)
 {
+
+  //OKVIS_ASSERT_TRUE(Exception, areLandmarksInFrontOfCameras(), "before optimisation")
 
   // fix current position, if not initialised
   std::unique_ptr<ceres::PoseError> initialFixation;
@@ -883,6 +888,8 @@ void ViSlamBackend::optimiseRealtimeGraph(
   //if(!isLoopClosing_ && !isLoopClosureAvailable_) {
   //  OKVIS_ASSERT_TRUE(Exception, realtimeGraph_.isSynched(fullGraph_), "not synched");
   //}
+
+  //OKVIS_ASSERT_TRUE(Exception, areLandmarksInFrontOfCameras(), "after optimisation")
 }
 
 bool ViSlamBackend::setOptimisationTimeLimit(double timeLimit, int minIterations)
@@ -1044,7 +1051,6 @@ void ViSlamBackend::drawOverheadImage(cv::Mat &image, int idx) const
         cv::Point2d cvPos0(pos0[0]+image.cols*0.5, -pos0[1]+image.rows*0.5);
         cv::Point2d cvPos1(pos1[0]+image.cols*0.5, -pos1[1]+image.rows*0.5);
         double brightness = 50.0 + std::min(205.0, piter->second.errorTerm->strength());
-        //std::cout <<  piter->second.errorTerm->strength() << std::endl;
         cv::line(image, cvPos0, cvPos1, cv::Scalar(brightness/2,brightness, brightness), 3,
                  cv::LINE_AA);
       }
@@ -1682,6 +1688,32 @@ int ViSlamBackend::cleanUnobservedLandmarks() {
 
 }
 
+bool ViSlamBackend::mergeLandmark(const LandmarkId &fromId, const LandmarkId &intoId)
+{
+  bool success = (realtimeGraph_.mergeLandmark(fromId, intoId, multiFrames_));
+  // also reset associated keypoints
+  auto observations = realtimeGraph_.landmarks_.at(intoId).observations;
+  for (const auto &observation : observations) {
+    multiFrames_.at(StateId(observation.first.frameId))
+      ->setLandmarkId(observation.first.cameraIndex,
+                      observation.first.keypointIndex,
+                      intoId.value());
+  }
+
+  if (isLoopClosing_ || isLoopClosureAvailable_) {
+    for (const auto &obs : observations) {
+      touchedStates_.insert(StateId(obs.first.frameId));
+    }
+    touchedLandmarks_.insert(fromId);
+    touchedLandmarks_.insert(intoId);
+  } else {
+    // now merge
+    success &= fullGraph_.mergeLandmark(fromId, intoId, multiFrames_);
+  }
+
+  return success;
+}
+
 int ViSlamBackend::mergeLandmarks(std::vector<LandmarkId> fromIds, std::vector<LandmarkId> intoIds)
 {
   OKVIS_ASSERT_TRUE_DBG(Exception, fromIds.size() == intoIds.size(), "vectors must be same lengths")
@@ -2033,7 +2065,8 @@ bool ViSlamBackend::writeFinalCsvTrajectory(const std::string &csvFileName, bool
 bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
                                        const kinematics::Transformation& T_Si_Sj,
                                        const Eigen::Matrix<double, 6, 6>& information,
-                                       bool & skipFullGraphOptimisation)
+                                       bool & skipFullGraphOptimisation,
+                                       double driftPercentageHeuristic)
 {
   OKVIS_ASSERT_TRUE(Exception, !isLoopClosing_, "Loop closure still running")
   OKVIS_ASSERT_TRUE(Exception, !isLoopClosureAvailable_,
@@ -2046,10 +2079,6 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
   if(realtimeGraph_.states_.count(pose_j) == 0) {
     return false;
   }
-
-  // first get all the current observations as two-pose edges
-  std::vector<ViGraphEstimator::PoseGraphEdge> poseGraphEdges, poseGraphEdgesAdded;
-  realtimeGraph_.obtainPoseGraphMst(poseGraphEdges);
 
   int numSteps = 0; // number of steps to distribute error over
   StateId lastLoopId = auxiliaryStates_.at(pose_i).loopId;
@@ -2064,6 +2093,7 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
   StateId firstId = auxiliaryStates_.at(pose_i).loopId;
   lastLoopId = firstId;
   double distanceTravelled = 0.0;
+  double distanceTravelled2 = 0.0; // just for the heuristic
   kinematics::Transformation T_WS_i = realtimeGraph_.states_.at(pose_i).pose->estimate();
   kinematics::Transformation T_WS_last = realtimeGraph_.states_.at(pose_i).pose->estimate();
   auto iter = realtimeGraph_.states_.find(pose_i);
@@ -2073,7 +2103,7 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
   if(pose_i != lastLoopId) {
     distanceTravelledVec +=
         (realtimeGraph_.states_.at(lastLoopId).pose->estimate().r()-T_WS_i.r());
-    distanceTravelled += distanceTravelledVec.norm();
+    distanceTravelled2 += distanceTravelledVec.norm();
 
   }
   for(; iter != realtimeGraph_.states_.end(); ++iter) {
@@ -2087,6 +2117,7 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
       distances.push_back(ds);
       distanceTravelledVec += dsVec;
       distanceTravelled += ds;
+      distanceTravelled2 += ds;
       T_WS_i = T_WS_j;
     }
   }
@@ -2104,6 +2135,11 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
     const kinematics::Transformation T_WSj_new = T_WSi * T_Si_Sj;
     kinematics::Transformation T_Wnew_Wold_final = T_WSj_new * T_WSj_old.inverse();
 
+    // compute rotation increment for the later averaging
+    Eigen::AngleAxisd aa(T_Wnew_Wold_final.q());
+    aa.angle() = aa.angle() * (1.0 / double(numSteps));
+    const kinematics::Transformation T_WW(Eigen::Vector3d(0.0,0.0,0.0), Eigen::Quaterniond(aa));
+
     // compute rotation adjustments
     kinematics::Transformation T_WS_prev = realtimeGraph_.pose(pose_i);
     kinematics::Transformation T_WS = realtimeGraph_.pose(pose_i);
@@ -2116,25 +2152,23 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
       T_WS_prev = T_WSk_old;
       const StateId loopId = auxiliaryStates_.at(iter->first).loopId;
       if(lastLoopId!=loopId) {
-        Eigen::Quaterniond slerped(1.0,0.0,0.0,0.0);
-        slerped.slerp(1.0/double(numSteps), T_Wnew_Wold_final.q());
-        T_WS = kinematics::Transformation(Eigen::Vector3d(0.0,0.0,0.0), slerped)
-                *  T_WS * T_SS;
+        T_WS = T_WW * T_WS * T_SS;
         lastLoopId = loopId;
       } else {
         T_WS = T_WS * T_SS;
       }
     }
 
+    // compute translation error to be distributed later
     const Eigen::Vector3d dr_W = T_WSj_new.r()-T_WS.r();
 
     // heuristic verification: check relative trajectory errors
-    const double relPositionError = dr_W.norm()/(distanceTravelled);
+    const double relPositionError = dr_W.norm()/(distanceTravelled2);
     const double relOrientationError =
         T_WSj_new.q().angularDistance(T_WSj_old.q())/double(numSteps);
     const double relPositionErrorBudget = // [m/m]
-            0.0135 + // 1.35% position bias
-            0.02*distanceTravelledVec.norm()/distanceTravelled + // 2% scale error
+            driftPercentageHeuristic/100.0 + // 1.35% position bias default
+            0.02*distanceTravelledVec.norm()/distanceTravelled2 + // 2% scale error
             0.08/sqrt(numSteps); // position noise, 8% stdev per step
     const double relOrientationErrorBudget =
         0.0004 + 0.004/sqrt(numSteps); // bias and noise, in rad/step
@@ -2142,13 +2176,27 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
         || relOrientationError > relOrientationErrorBudget
         || numSteps < 1) {
 
-      LOG(INFO) << "Skip loop closure (heuristic consistency).";
+      LOG(INFO) << pose_j.value() << "->" << pose_i.value() << " : "
+                << "Skip loop closure (heuristic consistency).";
       LOG(INFO) << "Rel. pos. err. " << relPositionError << " vs budget "
           << relPositionErrorBudget << " m/m, rel. or. err. "
           << relOrientationError << " vs budget "
           << relOrientationErrorBudget << " rad/kf";
-      LOG(INFO) << "dist. travelled " << distanceTravelled << " m, no. steps " << numSteps;
+      LOG(INFO) << "dist. travelled " << distanceTravelled2 << " m, no. steps " << numSteps;
 
+      return false;
+    }
+
+    // do not accept uncertain loop closures
+    Eigen::Matrix<double, 6, 6> P;
+    okvis::PseudoInverse::symm(information, P);
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(P.topLeftCorner<3, 3>());
+    Eigen::Vector3d eigenvalues = saes.eigenvalues();
+    double sigma = sqrt(eigenvalues[0] + eigenvalues[1] + eigenvalues[2]);
+    if (sigma > 0.1 && 3.0 * sigma > relPositionErrorBudget * distanceTravelled2) {
+      LOG(INFO) << pose_j.value() << "->" << pose_i.value() << " : "
+                << "Skip loop closure (reloc. 3-sigma = " << 3.0*sigma << " m vs budget "
+                   << relPositionErrorBudget*distanceTravelled2 << ") ";
       return false;
     }
 
@@ -2168,10 +2216,7 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
       if(lastLoopId!=loopId) {
         // we weight distance adjustments by distance travelled, and rotation uniformly.
         r +=  distances.at(size_t(ctr)) / distanceTravelled;
-        Eigen::Quaterniond slerped(1.0,0.0,0.0,0.0);
-        slerped.slerp(1.0/double(numSteps), T_Wnew_Wold_final.q());
-        T_WS = kinematics::Transformation(Eigen::Vector3d(0.0,0.0,0.0),slerped)
-                    *  T_WS * T_SS;
+        T_WS = T_WW *  T_WS * T_SS;
         lastLoopId = loopId;
         ++ctr;
       } else {
@@ -2189,7 +2234,7 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
       updatedStatesLoopClosureAttempt_.insert(iter->first);
     }
 
-    /// update landmarks
+    // update landmarks
     for(auto iter = realtimeGraph_.landmarks_.begin();
         iter != realtimeGraph_.landmarks_.end(); ++iter) {
       // TODO: check if this is always right!
@@ -2197,14 +2242,18 @@ bool ViSlamBackend::attemptLoopClosure(StateId pose_i, StateId pose_j,
       realtimeGraph_.setLandmark(iter->first, hPointNew, iter->second.hPoint->initialized());
       fullGraph_.setLandmark(iter->first, hPointNew, iter->second.hPoint->initialized());
     }
-
-    LOG(INFO) << "Long loop closure";
   }
 
   // remember this frame closed a loop
   auxiliaryStates_.at(pose_j).closedLoop = true;
 
   fullGraphRelativePoseConstraints_.push_back(RelPoseInfo{T_Si_Sj, information, pose_i, pose_j});
+
+  //const kinematics::Transformation T_SiSj_estimated = (pose(pose_i).inverse() * pose(pose_j));
+  //OKVIS_ASSERT_TRUE(Exception,
+  //                  (T_SiSj_estimated.inverse() * T_Si_Sj).T().isIdentity(1.0e-6),
+  //                  "We are f**ked: T_SiSj_estimated = \n" << T_SiSj_estimated.T() << std::endl <<
+  //                  "T_Si_Sj = \n" << T_Si_Sj.T())
 
   return true;
 }

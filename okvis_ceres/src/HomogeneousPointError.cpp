@@ -90,8 +90,6 @@ bool HomogeneousPointError::EvaluateWithMinimalJacobians(
   Eigen::Vector3d error;
   HomogeneousPointManifold::minus(&parameters[0][0], &measurement_[0], &error[0]);
 
-  //LOG(INFO)<<hp.toHomogeneous().transpose() << " : " << measurement.transpose();
-
   // weigh it
   Eigen::Map<Eigen::Vector3d> weighted_error(residuals);
   weighted_error = _squareRootInformation * error;

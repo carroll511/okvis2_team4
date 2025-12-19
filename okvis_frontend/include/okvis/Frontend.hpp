@@ -354,6 +354,22 @@ private:
                    const okvis::ViParameters& params,
                    bool asKeyframe);
 
+  /// \brief DBoW for loop closure
+  /// https://en.cppreference.com/w/cpp/language/pimpl
+  class DBoW;
+  std::unique_ptr<DBoW> dBow_; ///< DBoW object (PIMPL).
+
+  /**
+   * @brief Get filtered DBoW query.
+   * @param[in] dBow DBoW database to use.
+   * @param[in] features Features to match against DBoW.
+   * @param[out] stateIds Resulting matching (keyframe) pose IDs with corresponding scores.
+   * @return Number of matching keyframes.
+   */
+  int getFilteredDBoWResult(const std::unique_ptr<DBoW> &dBow,
+                            const std::vector<std::vector<uchar>> &features,
+                            std::vector<std::pair<StateId, double>> &stateIds) const;
+
   /**
    * @brief Verifies a recognised place with 3D2D matching, ransac, and nonlinear pose refinement.
    * @param[in] estimator Estimator.
@@ -378,12 +394,14 @@ private:
    * @param estimator       Estimator.
    * @param nCameraSystem   Camera configuration and parameters.
    * @param currentFrame    Frame with the new potential matches.
+   * @param initializePose  Initialize the pose from RANSAC?
    * @param removeOutliers  Remove observation of outliers in estimator.
-   * @return Number of inliers.
+   * @return True on success.
    */
-  int runRansac3d2d(Estimator& estimator,
+  bool runRansac3d2d(Estimator &estimator,
                     const okvis::cameras::NCameraSystem &nCameraSystem,
                     std::shared_ptr<okvis::MultiFrame> currentFrame,
+                    bool initializePose,
                     bool removeOutliers);
   /**
    * @brief Remove outliers on current frame.
@@ -425,11 +443,6 @@ private:
   /// \brief Classification network for keypoints (if enabled).
   std::vector<std::shared_ptr<Network>> networks_;
 
-  /// \brief DBoW for loop closure
-  /// https://en.cppreference.com/w/cpp/language/pimpl
-  class DBoW;
-  std::unique_ptr<DBoW> dBow_; ///< DBoW object (PIMPL).
-
   /**
    * @brief Match the frames to older, co-visible frames and triangulate.
    * @tparam CAMERA_GEOMETRY The camera geometry type to use.
@@ -453,6 +466,7 @@ private:
     Eigen::Matrix3Xd r_W; ///< Image centres of all the observations (W-coords).
     bool is3d = false; ///< Determine whether treated as 3D initialised.
     Eigen::Vector2d projection; ///< 2D projection location in pixels.
+    bool ignore = false; ///< Ignore if classified as sky / person.
   };
 
   /**
@@ -474,6 +488,7 @@ private:
    * @param[out] lmIds matched landmark IDs.
    * @param[out] hps_W matched landmarks (homogeneous) positions.
    * @param[out] ctrs Number of matches (by im).
+   * @param[out] reprErrs Reprojection errors (by im).
    */
   template<class CAMERA_GEOMETRY>
   void matchToMapByThread(
@@ -485,7 +500,8 @@ private:
       size_t numKeypoints,
       const MapPoints& pointMap, size_t im, const MultiFramePtr&  multiFrame,
       std::vector<double>& distances, std::vector<LandmarkId>& lmIds,
-      AlignedVector<Eigen::Vector4d>& hps_W, std::vector<size_t>& ctrs) const;
+      AlignedVector<Eigen::Vector4d>& hps_W, std::vector<size_t>& ctrs,
+      std::vector<double>& reprErrs) const;
 
   /**
    * @brief Parallelisable sub-part of matchToMap -- unitialised points.
